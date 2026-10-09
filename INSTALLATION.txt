@@ -1,0 +1,35 @@
+LoopRoll - installation
+=======================
+
+macOS (Apple Silicon et Intel, macOS 10.13 ou plus recent)
+----------------------------------------------------------
+1. Copie "LoopRoll.vst3" dans :
+       ~/Library/Audio/Plug-Ins/VST3/
+   (Finder > menu Aller > Aller au dossier... > colle ce chemin)
+
+2. Le plugin n'est pas notarise par Apple : macOS le bloque tant que tu n'as pas
+   retire le marqueur de telechargement. Ouvre l'app Terminal et lance :
+
+       xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/LoopRoll.vst3
+
+3. Relance ton DAW et rescanne les plugins.
+   Ableton Live : Reglages > Plug-Ins > active "Utiliser les dossiers systeme VST3", puis "Rescanner".
+
+
+Windows (64 bits)
+-----------------
+1. Copie le DOSSIER "LoopRoll.vst3" en entier dans :
+       C:\Program Files\Common Files\VST3\
+
+2. Relance ton DAW et rescanne les plugins.
+   Aucune installation supplementaire n'est necessaire.
+
+
+Utilisation
+-----------
+LOOP   Allume : capture l'audio a partir de cet instant puis le repete.
+       Eteint : retour au signal direct.
+SYNC   La duree suit le tempo du projet : 1/64, 1/32, 1/16, 1/8, 1/4, 1/2, 1/1.
+FREE   Duree libre de 10 ms a 4 s (clic sur la valeur pour la saisir au clavier).
+
+Les trois controles sont automatisables et assignables en MIDI depuis le DAW.
