@@ -33,7 +33,7 @@ static std::vector<float> makeSine (int n, double freq, float amp)
     return v;
 }
 
-struct Event { int sample; int type; double value; bool reanchor; double value2 = 0.0; };   // type 0 = on/off, 1 = durée, 2 = refresh (value = on/off, value2 = intervalle)
+struct Event { int sample; int type; double value; bool reanchor; double value2 = 0.0; };   // type 0 = on/off, 1 = durée, 2 = refresh (value = on/off, value2 = intervalle), 3 = fondus (value = entrée, value2 = sortie)
 
 // Fait tourner le moteur en mono, par blocs, en appliquant les évènements au début du bloc qui les contient.
 static std::vector<float> run (LooperEngine& engine, const std::vector<float>& in, std::vector<Event> events, int blockSize)
@@ -50,7 +50,8 @@ static std::vector<float> run (LooperEngine& engine, const std::vector<float>& i
             const auto& e = events[next++];
             if (e.type == 0)      engine.setActive (e.value > 0.5);
             else if (e.type == 1) engine.setLoopLength (e.value, e.reanchor);
-            else                  engine.setRefresh (e.value > 0.5, e.value2, e.reanchor);
+            else if (e.type == 2) engine.setRefresh (e.value > 0.5, e.value2, e.reanchor);
+            else                  engine.setFades (e.value, e.value2);
         }
 
         float* channel[1] = { out.data() + start };
@@ -465,9 +466,104 @@ static void testRefresh()
     }
 }
 
+static void testFades()
+{
+    std::printf ("9. Fondus : enveloppe exacte sur chaque passage, sans clic\n");
+
+    const int L = 4000, S = 4096, N = S + 12 * L;
+
+    // Enveloppe attendue, calculée comme dans le moteur.
+    auto envelope = [L] (int p, double fadeIn, double fadeOut)
+    {
+        double g = 1.0;
+        if (fadeIn > 0.0)  g = p <= 0 ? 0.0 : std::min (1.0, (double) p / (fadeIn * L));
+        if (fadeOut > 0.0) g = std::min (g, std::max (0.0, std::min (1.0, ((double) L - (double) p) / (fadeOut * L))));
+        return (float) g;
+    };
+
+    struct Case { double in, out; const char* name; };
+
+    for (const auto& c : { Case { 0.25, 0.0, "entree 25 %" }, Case { 0.0, 0.5, "sortie 50 %" },
+                           Case { 0.3, 0.3, "entree 30 % + sortie 30 %" }, Case { 1.0, 1.0, "entree 100 % + sortie 100 % (triangle)" } })
+    {
+        LooperEngine e;
+        e.prepare (kSampleRate, 1, 8.0);
+        e.setLoopLength ((double) L, false);
+        e.setFades (c.in, c.out);
+
+        const auto in = makeNoise (N, 12);
+        const auto out = run (e, in, { { S, 0, 1.0, false } }, 512);
+
+        int bad = 0, n = 0;
+        float peak = 0.0f;
+
+        // À partir de la 2e répétition (rampe d'entrée du looper terminée), hors zone de raccord.
+        for (int t = S + L + kFade; t < N; ++t)
+        {
+            const int pos = (t - S) % L;
+            if (pos >= L - kFade) continue;
+
+            ++n;
+            bad += out[(size_t) t] == in[(size_t) (S + pos)] * envelope (pos, c.in, c.out) ? 0 : 1;
+            peak = std::max (peak, std::abs (out[(size_t) t]));
+        }
+
+        CHECK (bad == 0, "%s : %d/%d echantillons hors enveloppe", c.name, bad, n);
+        CHECK (peak <= 1.0f, "%s : niveau au-dessus de l'entree", c.name);
+
+        // Le premier passage est enveloppé lui aussi (hors rampe d'entrée du looper).
+        int badFirst = 0;
+        for (int t = S + kFade + 8; t < S + L - kFade; ++t)
+            badFirst += out[(size_t) t] == in[(size_t) t] * envelope (t - S, c.in, c.out) ? 0 : 1;
+        CHECK (badFirst == 0, "%s : premier passage hors enveloppe (%d)", c.name, badFirst);
+    }
+
+    // Avec un fondu d'entrée, chaque répétition repart du silence ; avec un fondu de sortie, elle y finit.
+    {
+        LooperEngine e;
+        e.prepare (kSampleRate, 1, 8.0);
+        e.setLoopLength ((double) L, false);
+        e.setFades (0.2, 0.2);
+        const auto in = makeNoise (N, 13);
+        const auto out = run (e, in, { { S, 0, 1.0, false } }, 512);
+
+        float atBoundary = 0.0f;
+        for (int k = 2; k < 10; ++k)
+            for (int d = -2; d <= 2; ++d)
+                atBoundary = std::max (atBoundary, std::abs (out[(size_t) (S + k * L + d)]));
+        CHECK (atBoundary < 0.01f, "le raccord devrait etre au silence avec les deux fondus (%.4f)", atBoundary);
+    }
+
+    // Pas de clic : sinus, fondus fixes puis modifiés en cours de boucle, avec et sans refresh.
+    struct ClickCase { double in, out; bool refresh; };
+
+    for (const auto& c : { ClickCase { 0.05, 0.0, false }, ClickCase { 0.0, 0.05, false }, ClickCase { 0.4, 0.4, false },
+                           ClickCase { 0.05, 0.0, true }, ClickCase { 0.0, 0.3, true }, ClickCase { 0.5, 0.5, true } })
+    {
+        const int M = 160000;
+        LooperEngine e;
+        e.prepare (kSampleRate, 1, 8.0);
+        e.setLoopLength (5003.0, false);
+        e.setFades (c.in, c.out);
+        e.setRefresh (c.refresh, 20011.0, false);
+
+        const auto sine = makeSine (M, 55.0, 0.8f);
+        const auto out = run (e, sine, { { 3000, 0, 1.0, false },
+                                         { 60000, 3, 0.0, false, 0.0 },        // fondus coupés en cours de boucle
+                                         { 90000, 3, c.out, false, c.in },     // puis inversés
+                                         { 130000, 0, 0.0, false } }, 256);
+        const float worst = maxStep (out, 0, M);
+        CHECK (worst < 0.03f, "clic avec fondus %.2f / %.2f%s : %.4f", c.in, c.out, c.refresh ? " + refresh" : "", worst);
+
+        bool dry = true;
+        for (int t = 131000; t < M; ++t) dry = dry && out[(size_t) t] == sine[(size_t) t];
+        CHECK (dry, "retour au direct incorrect avec fondus %.2f / %.2f", c.in, c.out);
+    }
+}
+
 static void testFuzz()
 {
-    std::printf ("9. Fuzz : blocs, durees, modes et activations aleatoires (stereo, plusieurs frequences d'echantillonnage)\n");
+    std::printf ("10. Fuzz : blocs, durees, modes et activations aleatoires (stereo, plusieurs frequences d'echantillonnage)\n");
     std::mt19937 rng (1234);
 
     for (double sr : { 22050.0, 44100.0, 48000.0, 96000.0, 192000.0 })
@@ -489,6 +585,7 @@ static void testFuzz()
             if (u (rng) < 0.08) { active = ! active; e.setActive (active); }
             if (u (rng) < 0.30) e.setLoopLength (std::pow (10.0, u (rng) * 6.0 - 0.5), u (rng) < 0.5);
             if (u (rng) < 0.25) e.setRefresh (u (rng) < 0.7, std::pow (10.0, u (rng) * 6.5 - 0.5), u (rng) < 0.5);
+            if (u (rng) < 0.20) e.setFades (u (rng) < 0.3 ? 0.0 : u (rng) * 1.2 - 0.1, u (rng) < 0.3 ? 0.0 : u (rng) * 1.2 - 0.1);
             if (u (rng) < 0.002) e.reset();
 
             float* io[2] = { l.data(), r.data() };
@@ -513,6 +610,7 @@ int main()
     testFreeLengthChange();
     testRetriggerAndCapacity();
     testRefresh();
+    testFades();
     testFuzz();
 
     std::printf (failures == 0 ? "\nTOUS LES TESTS PASSENT\n" : "\n%d ECHEC(S)\n", failures);

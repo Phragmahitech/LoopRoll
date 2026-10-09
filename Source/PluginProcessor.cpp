@@ -46,6 +46,16 @@ namespace
                  } };
     }
 
+    // Fondu en pourcentage de la durée de boucle.
+    std::unique_ptr<juce::AudioParameterFloat> makeFadeParameter (const char* id, const char* name)
+    {
+        return std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { id, 1 }, name,
+                                                            juce::NormalisableRange<float> (0.0f, 100.0f, 1.0f), 0.0f,
+                                                            juce::AudioParameterFloatAttributes()
+                                                                .withStringFromValueFunction ([] (float value, int) { return juce::String (juce::roundToInt (value)) + " %"; })
+                                                                .withValueFromStringFunction ([] (const juce::String& text) { return text.retainCharacters ("0123456789.,").replaceCharacter (',', '.').getFloatValue(); }));
+    }
+
     std::unique_ptr<juce::AudioParameterFloat> makeTimeParameter (const char* id, const char* name,
                                                                   float shortestMs, float longestMs, float defaultMs)
     {
@@ -104,6 +114,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout LoopRollAudioProcessor::crea
     layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { refreshDivisionId, 1 }, "Refresh Division",
                                                               getRefreshDivisionNames(), 2));   // 1/1
 
+    layout.add (makeFadeParameter (fadeInId, "Fade In"));
+    layout.add (makeFadeParameter (fadeOutId, "Fade Out"));
+
     return layout;
 }
 
@@ -120,6 +133,8 @@ LoopRollAudioProcessor::LoopRollAudioProcessor()
     refreshParam         = apvts.getRawParameterValue (refreshId);
     refreshTimeParam     = apvts.getRawParameterValue (refreshTimeId);
     refreshDivisionParam = apvts.getRawParameterValue (refreshDivisionId);
+    fadeInParam          = apvts.getRawParameterValue (fadeInId);
+    fadeOutParam         = apvts.getRawParameterValue (fadeOutId);
 }
 
 bool LoopRollAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -187,6 +202,9 @@ void LoopRollAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
     lastSync = sync;
     lastDivision = division;
     lastRefreshDivision = refreshDivision;
+
+    engine.setFades (0.01 * (double) fadeInParam->load (std::memory_order_relaxed),
+                     0.01 * (double) fadeOutParam->load (std::memory_order_relaxed));
 
     engine.setActive (loopParam->load (std::memory_order_relaxed) > 0.5f);
     engine.process (buffer.getArrayOfWritePointers(), juce::jmin (numIn, numOut, buffer.getNumChannels()), numSamples);

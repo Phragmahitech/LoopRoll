@@ -4,13 +4,15 @@ LoopRoll - installation
 macOS (Apple Silicon et Intel, macOS 10.13 ou plus recent)
 ----------------------------------------------------------
 1. Copie "LoopRoll.vst3" dans :
-       ~/Library/Audio/Plug-Ins/VST3/
+       /Library/Audio/Plug-Ins/VST3/
    (Finder > menu Aller > Aller au dossier... > colle ce chemin)
+   Ne garde qu'UNE copie du plugin : s'il en reste une autre dans
+   ~/Library/Audio/Plug-Ins/VST3/, le DAW peut charger l'ancienne version.
 
 2. Le plugin n'est pas notarise par Apple : macOS le bloque tant que tu n'as pas
    retire le marqueur de telechargement. Ouvre l'app Terminal et lance :
 
-       xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/LoopRoll.vst3
+       xattr -dr com.apple.quarantine /Library/Audio/Plug-Ins/VST3/LoopRoll.vst3
 
 3. Relance ton DAW et rescanne les plugins.
    Ableton Live : Reglages > Plug-Ins > active "Utiliser les dossiers systeme VST3", puis "Rescanner".
@@ -36,6 +38,11 @@ SYNC           Les deux potards suivent le tempo du projet
                (boucle : 1/1 a 1/64, refresh : 4 mesures a 1/32).
 FREE           Durees libres (boucle : 4 s a 10 ms, refresh : 16 s a 50 ms).
                Clic sur la valeur pour la saisir au clavier.
+
+IN / OUT       Fondu d'entree et de sortie sur chaque passage de la boucle,
+               en % de sa duree. 0 % = boucle brute.
+
+Le numero de version est affiche en haut a droite de l'interface.
 
 Exemple : LENGTH 1/16 + REFRESH EVERY 1/4 = un seizieme de direct puis trois
 repetitions, a chaque noire.

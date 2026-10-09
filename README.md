@@ -10,7 +10,8 @@ Effet audio VST3 de type looper / beat-repeat, pour macOS et Windows.
 - **REFRESH EVERY** : intervalle entre deux recaptures. Tourner à droite = plus fréquent.
   - **SYNC** : 4/1 (4 mesures), 2/1, 1/1, 1/2, 1/4, 1/8, 1/16, 1/32.
   - **FREE** : de 16 s à 50 ms.
-- Le sélecteur FREE / SYNC s'applique aux deux potards.
+- **FADE IN / FADE OUT** (petits potards IN et OUT au centre) : fondu d'entrée et de sortie appliqués à chaque passage de la boucle, en % de sa durée. L'afficheur au-dessus dessine la forme obtenue. À 0 % / 0 % la boucle est brute.
+- Le sélecteur FREE / SYNC s'applique aux deux grands potards.
 - Mono et stéréo, latence nulle, tous les contrôles sont automatisables. Le sens des potards est celui des paramètres : en automation ou en mapping MIDI aussi, monter la valeur raccourcit.
 
 ## Comportement
@@ -22,6 +23,8 @@ Effet audio VST3 de type looper / beat-repeat, pour macOS et Windows.
 - REFRESH : à chaque point de refresh, une nouvelle capture démarre. On entend donc un passage de direct (une durée de boucle), puis ses répétitions jusqu'au refresh suivant. Exemple : LENGTH 1/16 et REFRESH EVERY 1/4 = un seizième de direct, puis trois répétitions, à chaque noire.
 - Les points de refresh sont comptés depuis l'allumage de LOOP, sans dérive. Allumer REFRESH en cours de boucle le fait tomber sur le prochain point de cette grille. Juste avant chaque refresh, la boucle sortante est fondue sur 3 ms vers le direct : la nouvelle capture démarre à plein niveau.
 - Si l'intervalle de refresh est plus court que la boucle, rien n'a le temps de se répéter : c'est le direct qui passe.
+- Fondus : l'enveloppe s'applique à tous les passages, y compris le premier (le direct). Avec un fondu d'entrée chaque passage repart du silence, avec un fondu de sortie il y retourne. Si les deux se chevauchent (plus de 100 % au total), l'enveloppe forme un triangle. Un fondu plus court que 3 ms ne descend pas jusqu'au silence, pour ne pas claquer.
+- L'interface affiche son numéro de version en haut à droite : c'est le moyen le plus rapide de vérifier quelle version le DAW a chargée.
 - Si l'hôte ne fournit pas de tempo, le dernier tempo connu est utilisé (120 BPM par défaut).
 - La capture démarre au début du bloc audio dans lequel LOOP passe à ON : la précision dépend de la taille de buffer du DAW (≈ 3 ms à 128 échantillons, ≈ 12 ms à 512). Il n'y a pas de quantification du départ sur la grille.
 
@@ -42,9 +45,10 @@ Les `.zip` sont publiés avant l'étape de validation : ils restent télécharge
 
 Voir `INSTALLATION.txt` (inclus dans chaque `.zip`). En résumé :
 
-- **macOS** : copier `LoopRoll.vst3` dans `~/Library/Audio/Plug-Ins/VST3/`, puis dans Terminal :
-  `xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/LoopRoll.vst3`
+- **macOS** : copier `LoopRoll.vst3` dans `/Library/Audio/Plug-Ins/VST3/`, puis dans Terminal :
+  `xattr -dr com.apple.quarantine /Library/Audio/Plug-Ins/VST3/LoopRoll.vst3`
   (le plugin n'est pas notarisé par Apple, macOS le bloque sinon).
+  Ne garder qu'UNE copie : s'il en reste une autre dans `~/Library/Audio/Plug-Ins/VST3/`, le DAW peut charger l'ancienne.
 - **Windows** : copier le dossier `LoopRoll.vst3` dans `C:\Program Files\Common Files\VST3\`.
 
 ## Compiler soi-même
@@ -64,8 +68,9 @@ Le plugin est dans `build/LoopRoll_artefacts/Release/VST3/LoopRoll.vst3` ; avec 
 | --- | --- |
 | `Source/LooperEngine.h` | Tout le traitement audio. Aucune dépendance, testable seul. |
 | `Source/PluginProcessor.*` | Paramètres, lecture du tempo de l'hôte, sauvegarde d'état. |
-| `Source/PluginEditor.*` | Interface. |
-| `Tests/EngineTests.cpp` | Tests du moteur : boucle exacte, absence de clics, grille sans dérive, changements de durée, refresh, fuzz. |
+| `Source/PluginEditor.*` | Interface (design clair, dessin vectoriel). |
+| `Assets/` | Police Chakra Petch embarquée dans le plugin (licence OFL, voir `ChakraPetch-OFL.txt`). |
+| `Tests/EngineTests.cpp` | Tests du moteur : boucle exacte, absence de clics, grille sans dérive, changements de durée, refresh, fondus, fuzz. |
 | `Tests/PluginTests.cpp` | Tests du plugin complet : sync au tempo, modes, état, interface. |
 
 Lancer les tests : ajouter `-DLOOPROLL_BUILD_TESTS=ON` à la configuration, compiler, puis `ctest --test-dir build -C Release --output-on-failure`.

@@ -27,6 +27,11 @@
     la nouvelle capture démarre donc elle aussi sur un échantillon à plein
     niveau, et le premier passage est de nouveau l'audio en direct.
 
+    Fondus : une enveloppe (fondu d'entrée / de sortie, en fraction de la durée
+    de boucle) est appliquée à chaque passage, y compris le premier. Elle est
+    calculée par tête de lecture, donc elle reste continue à travers les
+    raccords et les refresh.
+
     Tout est alloué dans prepare() : process() ne fait ni allocation ni verrou.
 */
 class LooperEngine
@@ -42,6 +47,7 @@ public:
         maxLoop  = std::max (minLoop * 2, (int) std::ceil (maxLoopSeconds * sr));
         capacity = maxLoop + maxFade + 8;
         gateStep = 1.0f / (float) maxFade;
+        shapeSmoothing = 1.0 - std::exp (-1.0 / (0.02 * sr));   // ~20 ms
 
         buffer.assign ((std::size_t) channels, std::vector<float> ((std::size_t) (preRoll + capacity), 0.0f));
         history.assign ((std::size_t) channels, std::vector<float> ((std::size_t) preRoll, 0.0f));
@@ -65,6 +71,8 @@ public:
         pos = 0;
         iterPos = 0.0;
         refreshPos = 0.0;
+        fadeInNow = fadeInTarget;
+        fadeOutNow = fadeOutTarget;
 
         for (auto& h : history)
             std::fill (h.begin(), h.end(), 0.0f);
@@ -129,6 +137,22 @@ public:
             refreshPos = std::fmod ((double) totalElapsed, refreshInterval);
     }
 
+    /**
+        Fondus appliqués à chaque passage de la boucle, en fraction de sa durée (0 à 1).
+        0 / 0 = boucle brute. Si les deux se chevauchent, l'enveloppe forme un triangle.
+    */
+    void setFades (double fadeInFraction, double fadeOutFraction) noexcept
+    {
+        fadeInTarget  = std::isnan (fadeInFraction)  ? 0.0 : std::max (0.0, std::min (1.0, fadeInFraction));
+        fadeOutTarget = std::isnan (fadeOutFraction) ? 0.0 : std::max (0.0, std::min (1.0, fadeOutFraction));
+
+        if (state == State::idle)
+        {
+            fadeInNow = fadeInTarget;
+            fadeOutNow = fadeOutTarget;
+        }
+    }
+
     bool isLooping() const noexcept                  { return state == State::looping; }
     double getLoopLength() const noexcept            { return requestedLength; }
     int getMaxLoopLength() const noexcept            { return maxLoop; }
@@ -174,6 +198,20 @@ public:
                 refreshGain = t * t * (3.0f - 2.0f * t);
             }
 
+            // Enveloppe de fondu : lissée pour qu'un mouvement de potard ne claque pas.
+            fadeInNow  = smoothTowards (fadeInNow, fadeInTarget);
+            fadeOutNow = smoothTowards (fadeOutNow, fadeOutTarget);
+
+            const bool shaping = fadeInNow > 0.0 || fadeOutNow > 0.0;
+            float envA = 1.0f, envB = 1.0f, envPreRoll = 1.0f;
+
+            if (shaping)
+            {
+                envA = envelopeGain (pos);
+                envB = fading ? envelopeGain (posB) : envA;
+                envPreRoll = envelopeGain (-1);   // niveau juste avant un début de boucle
+            }
+
             const std::size_t indexA = bufferIndex (pos, canCapture);
             const std::size_t indexB = fading ? bufferIndex (posB, canCapture) : indexA;
 
@@ -189,11 +227,14 @@ public:
 
                 float wet = buf[indexA];
 
-                if (fading)
-                    wet += fadeGain * (buf[indexB] - wet);
+                if (shaping)
+                    wet *= envA;
 
-                if (refreshFading)
-                    wet += refreshGain * (in - wet);   // la boucle sortante s'efface vers le direct
+                if (fading)
+                    wet += fadeGain * ((shaping ? buf[indexB] * envB : buf[indexB]) - wet);
+
+                if (refreshFading)   // la boucle sortante s'efface vers le début de la capture suivante
+                    wet += refreshGain * ((shaping ? in * envPreRoll : in) - wet);
 
                 // gate == 1 : copie exacte de l'enregistrement (pas d'arrondi flottant)
                 io[ch][n] = gate >= 1.0f ? wet : in + gate * (wet - in);
@@ -275,6 +316,45 @@ private:
         return std::max (8, std::min (maxFade, (int) (l * 0.25)));
     }
 
+    double smoothTowards (double current, double target) const noexcept
+    {
+        const double delta = target - current;
+        return std::abs (delta) < 1.0e-5 ? target : current + delta * shapeSmoothing;
+    }
+
+    /**
+        Gain de l'enveloppe pour une tête à la position p (négatif = pré-roll, avant le début de boucle).
+
+        Un fondu plus court que le raccord de boucle (3 ms) ne descend pas jusqu'au silence : il part
+        d'un niveau plancher qui tend vers 1 quand le fondu tend vers 0. La pente reste ainsi bornée,
+        et l'enveloppe rejoint sans saut le cas « pas de fondu ».
+    */
+    float envelopeGain (int p) const noexcept
+    {
+        const double minRamp = (double) fadeFor (length);
+        double g = 1.0;
+
+        if (fadeInNow > 0.0)
+        {
+            const double ramp = fadeInNow * length;
+            const double rise = p <= 0 ? 0.0 : std::min (1.0, (double) p / ramp);
+            const double floorLevel = 1.0 - ramp / minRamp;
+
+            g = floorLevel > 0.0 ? floorLevel + (1.0 - floorLevel) * rise : rise;
+        }
+
+        if (fadeOutNow > 0.0)
+        {
+            const double ramp = fadeOutNow * length;
+            const double fall = std::max (0.0, std::min (1.0, (length - (double) p) / ramp));
+            const double floorLevel = 1.0 - ramp / minRamp;
+
+            g = std::min (g, floorLevel > 0.0 ? floorLevel + (1.0 - floorLevel) * fall : fall);
+        }
+
+        return (float) g;
+    }
+
     void advanceHistory() noexcept
     {
         if (++historyPos >= preRoll)
@@ -316,6 +396,8 @@ private:
         totalElapsed = 0;
         refreshPos = 0.0;
         refreshFading = false;
+        fadeInNow = fadeInTarget;
+        fadeOutNow = fadeOutTarget;
         gate = 0.0f;
         state = State::looping;
     }
@@ -452,4 +534,9 @@ private:
     double refreshCarry = 0.0;
     std::int64_t totalElapsed = 0;      // échantillons depuis l'activation de la boucle
     int refreshFadeLength = 0, refreshFadeCount = 0;
+
+    // Fondus par passage (fractions de la durée de boucle)
+    double fadeInTarget = 0.0, fadeOutTarget = 0.0;   // demandés
+    double fadeInNow = 0.0, fadeOutNow = 0.0;         // lissés
+    double shapeSmoothing = 1.0;
 };

@@ -14,7 +14,7 @@ endif()
 # Windows : runtime C++ lié en statique -> aucun "Visual C++ Redistributable" à installer
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-project(LoopRoll VERSION 0.2.0 LANGUAGES C CXX)
+project(LoopRoll VERSION 0.3.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -57,14 +57,22 @@ target_sources(LoopRoll PRIVATE
     Source/PluginProcessor.cpp
     Source/PluginEditor.cpp)
 
+# Police de l'interface (Chakra Petch, licence OFL : voir Assets/ChakraPetch-OFL.txt), embarquée dans le plugin
+juce_add_binary_data(LoopRollAssets SOURCES
+    Assets/ChakraPetch-SemiBold.ttf
+    Assets/ChakraPetch-Bold.ttf)
+set_target_properties(LoopRollAssets PROPERTIES POSITION_INDEPENDENT_CODE TRUE)
+
 target_compile_definitions(LoopRoll PUBLIC
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
-    JUCE_VST3_CAN_REPLACE_VST2=0)
+    JUCE_VST3_CAN_REPLACE_VST2=0
+    LOOPROLL_VERSION="${PROJECT_VERSION}")
 
 target_link_libraries(LoopRoll
     PRIVATE
         juce::juce_audio_processors
+        LoopRollAssets
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags)
@@ -84,9 +92,11 @@ if(LOOPROLL_BUILD_TESTS)
         Tests/PluginTests.cpp
         Source/PluginProcessor.cpp
         Source/PluginEditor.cpp)
-    target_compile_definitions(LoopRollPluginTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_compile_definitions(LoopRollPluginTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1
+        LOOPROLL_VERSION="${PROJECT_VERSION}")
     target_link_libraries(LoopRollPluginTests PRIVATE
         juce::juce_audio_processors
+        LoopRollAssets
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags)
     add_test(NAME plugin COMMAND LoopRollPluginTests)

@@ -189,6 +189,48 @@ static void testSyncAndFree (double sampleRate, int blockSize, int numChannels)
     p->releaseResources();
 }
 
+static void testFades()
+{
+    std::cout << "- fondus sur la boucle" << std::endl;
+
+    const double sampleRate = 48000.0;
+    const int blockSize = 256, total = 96000, loopStart = blockSize * 20, loopLength = 4800;   // 100 ms
+
+    std::unique_ptr<juce::AudioProcessor> p (createPluginFilter());
+    p->setRateAndBufferSizeDetails (sampleRate, blockSize);
+    p->prepareToPlay (sampleRate, blockSize);
+
+    setParam (*p, LoopRollAudioProcessor::modeId, 0.0f);
+    setParam (*p, LoopRollAudioProcessor::timeId, 100.0f);
+    setParam (*p, LoopRollAudioProcessor::refreshId, 0.0f);
+    setParam (*p, LoopRollAudioProcessor::fadeInId, 50.0f);    // 2400 échantillons
+    setParam (*p, LoopRollAudioProcessor::fadeOutId, 25.0f);   // 1200 échantillons
+
+    juce::AudioBuffer<float> in (2, total), out;
+    render (*p, in, out, blockSize, [&] (int start)
+    {
+        if (start == loopStart)  setParam (*p, LoopRollAudioProcessor::loopId, 1.0f);
+    });
+
+    // Sur chaque passage : à 25 % le fondu d'entrée est à mi-course, à 60 % plein niveau, à 87,5 % le fondu de sortie est à mi-course.
+    struct Point { int position; float gain; };
+
+    for (int repeat : { 0, 3, 11 })
+        for (const auto point : { Point { 1200, 0.5f }, Point { 2880, 1.0f }, Point { 4200, 0.5f } })
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                const float expected = in.getSample (ch, loopStart + point.position) * point.gain;
+                const float actual = out.getSample (ch, loopStart + repeat * loopLength + point.position);
+                check (juce::exactlyEqual (actual, expected), "fondu : passage " + juce::String (repeat) + ", position " + juce::String (point.position)
+                                                                + " : " + juce::String (actual) + " au lieu de " + juce::String (expected));
+            }
+
+    // Début de passage : silence (fondu d'entrée).
+    check (std::abs (out.getSample (0, loopStart + 5 * loopLength + 1)) < 0.001f, "le passage devrait repartir du silence");
+
+    p->releaseResources();
+}
+
 static void testParametersAndState()
 {
     std::cout << "- parametres et sauvegarde d'etat" << std::endl;
@@ -221,6 +263,8 @@ static void testParametersAndState()
     check (refreshDivision->getText (0.0f, 64) == "4/1" && refreshDivision->getText (1.0f, 64) == "1/32", "sens du potard de refresh");
     check (apvts.getParameter (LoopRollAudioProcessor::refreshId)->getValue() < 0.5f, "refresh eteint par defaut");
     check (apvts.getParameter (LoopRollAudioProcessor::refreshTimeId)->getCurrentValueAsText() == "1.00 s", "intervalle free par defaut");
+    check (apvts.getParameter (LoopRollAudioProcessor::fadeInId)->getCurrentValueAsText() == "0 %", "fondu d'entree par defaut");
+    check (apvts.getParameter (LoopRollAudioProcessor::fadeOutId)->getCurrentValueAsText() == "0 %", "fondu de sortie par defaut");
 
     check (division->getCurrentValueAsText() == "1/4", "division par defaut : " + division->getCurrentValueAsText());
     check (apvts.getParameter (LoopRollAudioProcessor::modeId)->getCurrentValueAsText() == "Sync", "mode par defaut");
@@ -231,6 +275,8 @@ static void testParametersAndState()
     setParam (*a, LoopRollAudioProcessor::refreshId, 1.0f);
     setParam (*a, LoopRollAudioProcessor::refreshTimeId, 2500.0f);
     setParam (*a, LoopRollAudioProcessor::refreshDivisionId, 5.0f);
+    setParam (*a, LoopRollAudioProcessor::fadeInId, 12.0f);
+    setParam (*a, LoopRollAudioProcessor::fadeOutId, 80.0f);
 
     juce::MemoryBlock state;
     a->getStateInformation (state);
@@ -245,6 +291,8 @@ static void testParametersAndState()
     check (restored.getParameter (LoopRollAudioProcessor::refreshId)->getValue() > 0.5f, "refresh non restaure");
     check (restored.getParameter (LoopRollAudioProcessor::refreshTimeId)->getCurrentValueAsText() == "2.50 s", "intervalle free non restaure");
     check (restored.getParameter (LoopRollAudioProcessor::refreshDivisionId)->getCurrentValueAsText() == "1/8", "intervalle sync non restaure");
+    check (restored.getParameter (LoopRollAudioProcessor::fadeInId)->getCurrentValueAsText() == "12 %", "fondu d'entree non restaure");
+    check (restored.getParameter (LoopRollAudioProcessor::fadeOutId)->getCurrentValueAsText() == "80 %", "fondu de sortie non restaure");
 
     // Un état corrompu ne doit rien casser.
     const char garbage[] = "pas un etat valide";
@@ -285,6 +333,8 @@ static void testEditor (const juce::File& outputDir)
     setParam (*p, LoopRollAudioProcessor::refreshDivisionId, 4.0f);   // 1/4
     setParam (*p, LoopRollAudioProcessor::refreshId, 1.0f);
     setParam (*p, LoopRollAudioProcessor::loopId, 1.0f);
+    setParam (*p, LoopRollAudioProcessor::fadeInId, 20.0f);
+    setParam (*p, LoopRollAudioProcessor::fadeOutId, 35.0f);
     snapshot ("ui_sync_refresh_on");
 
     setParam (*p, LoopRollAudioProcessor::modeId, 0.0f);
@@ -292,23 +342,38 @@ static void testEditor (const juce::File& outputDir)
     setParam (*p, LoopRollAudioProcessor::refreshTimeId, 4000.0f);
     snapshot ("ui_free");
 
-    // L'interface suit bien les paramètres : en mode free ce sont les deux potards en ms qui sont visibles.
-    juce::StringArray shownTexts;
-    juce::Array<double> shownPositions;
-    for (auto* child : editor->getChildren())
-        if (auto* slider = dynamic_cast<juce::Slider*> (child))
-            if (slider->isVisible())
-            {
-                shownTexts.add (slider->getTextFromValue (slider->getValue()));
-                shownPositions.add (slider->valueToProportionOfLength (slider->getValue()));
-            }
+    // L'interface suit bien les paramètres : en mode free ce sont les potards en ms qui sont visibles.
+    const auto knob = [&editor] (const char* id) { return dynamic_cast<juce::Slider*> (editor->findChildWithID (id)); };
+    auto* time = knob (LoopRollAudioProcessor::timeId);
+    auto* division = knob (LoopRollAudioProcessor::divisionId);
+    auto* refreshTime = knob (LoopRollAudioProcessor::refreshTimeId);
+    auto* refreshDivision = knob (LoopRollAudioProcessor::refreshDivisionId);
+    auto* fadeIn = knob (LoopRollAudioProcessor::fadeInId);
+    auto* fadeOut = knob (LoopRollAudioProcessor::fadeOutId);
 
-    check (shownTexts.size() == 2, "deux potards doivent etre visibles (" + juce::String (shownTexts.size()) + ")");
-    check (shownTexts.joinIntoString (" | ") == "1.50 s | 4.00 s", "valeurs affichees en mode free : " + shownTexts.joinIntoString (" | "));
+    check (time != nullptr && division != nullptr && refreshTime != nullptr && refreshDivision != nullptr
+             && fadeIn != nullptr && fadeOut != nullptr, "potards introuvables dans l'interface");
 
-    // 1,5 s sur une plage 10 ms - 4 s : le potard doit être nettement à gauche (long = gauche).
-    check (shownPositions.size() == 2 && shownPositions[0] > 0.05 && shownPositions[0] < 0.3,
-           "position du potard de duree : " + juce::String (shownPositions.size() > 0 ? shownPositions[0] : -1.0));
+    if (time != nullptr && division != nullptr && refreshTime != nullptr && refreshDivision != nullptr && fadeIn != nullptr && fadeOut != nullptr)
+    {
+        check (time->isVisible() && refreshTime->isVisible() && ! division->isVisible() && ! refreshDivision->isVisible(),
+               "mode free : mauvais potards visibles");
+        check (fadeIn->isVisible() && fadeOut->isVisible(), "potards de fondu masques");
+        check (time->getTextFromValue (time->getValue()) == "1.50 s", "valeur de duree : " + time->getTextFromValue (time->getValue()));
+        check (refreshTime->getTextFromValue (refreshTime->getValue()) == "4.00 s", "valeur de refresh : " + refreshTime->getTextFromValue (refreshTime->getValue()));
+        check (fadeIn->getTextFromValue (fadeIn->getValue()) == "20 %", "valeur de fondu : " + fadeIn->getTextFromValue (fadeIn->getValue()));
+
+        // 1,5 s sur une plage 10 ms - 4 s : le potard doit être nettement à gauche (long = gauche).
+        const double position = time->valueToProportionOfLength (time->getValue());
+        check (position > 0.05 && position < 0.3, "position du potard de duree : " + juce::String (position));
+
+        // Les afficheurs sous les potards montrent les mêmes valeurs.
+        juce::StringArray readouts;
+        for (auto* child : editor->getChildren())
+            if (auto* label = dynamic_cast<juce::Label*> (child))
+                readouts.add (label->getText());
+        check (readouts.joinIntoString (" | ") == "1.50 s | 4.00 s", "afficheurs : " + readouts.joinIntoString (" | "));
+    }
 
     p->editorBeingDeleted (editor.get());   // ce que fait un hôte avant de détruire l'interface
     editor.reset();
@@ -323,6 +388,7 @@ int main (int argc, char* argv[])
             testSyncAndFree (sampleRate, blockSize, 2);
 
     testSyncAndFree (48000.0, 256, 1);
+    testFades();
     testParametersAndState();
     testEditor (argc > 1 ? juce::File::getCurrentWorkingDirectory().getChildFile (juce::String::fromUTF8 (argv[1])) : juce::File());
 

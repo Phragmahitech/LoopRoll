@@ -16,6 +16,8 @@ public:
     static constexpr const char* refreshId         = "refresh";
     static constexpr const char* refreshTimeId     = "refreshTime";
     static constexpr const char* refreshDivisionId = "refreshDivision";
+    static constexpr const char* fadeInId          = "fadeIn";
+    static constexpr const char* fadeOutId         = "fadeOut";
 
     // Plages du mode free (ms)
     static constexpr float minTimeMs = 10.0f;
@@ -80,6 +82,8 @@ private:
     std::atomic<float>* refreshParam = nullptr;
     std::atomic<float>* refreshTimeParam = nullptr;
     std::atomic<float>* refreshDivisionParam = nullptr;
+    std::atomic<float>* fadeInParam = nullptr;
+    std::atomic<float>* fadeOutParam = nullptr;
 
     double currentSampleRate = 44100.0;
     double lastBpm = 120.0;
