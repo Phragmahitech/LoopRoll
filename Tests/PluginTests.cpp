@@ -104,7 +104,8 @@ static void testSyncAndFree (double sampleRate, int blockSize, int numChannels)
     // --- Mode sync : 1/16 à 174 BPM, puis 1/8 ---
     playHead.bpm = 174.0;
     setParam (*p, LoopRollAudioProcessor::modeId, 1.0f);
-    setParam (*p, LoopRollAudioProcessor::divisionId, 2.0f);   // 1/16
+    setParam (*p, LoopRollAudioProcessor::divisionId, 4.0f);   // 1/16
+    setParam (*p, LoopRollAudioProcessor::refreshId, 0.0f);
     setParam (*p, LoopRollAudioProcessor::loopId, 0.0f);
 
     const double sixteenth = 60.0 / 174.0 / 4.0 * sampleRate;
@@ -133,6 +134,34 @@ static void testSyncAndFree (double sampleRate, int blockSize, int numChannels)
         const int offset = findRepeatOffset (in, out, loopStart, loopStart + (int) std::lround (k * eighth));
         check (std::abs (offset) <= 1, "sync 1/8 apres changement : repetition " + juce::String (k) + " hors grille (" + juce::String (offset) + ")");
     }
+
+    // --- Refresh : boucle 1/16 recapturée toutes les noires ---
+    setParam (*p, LoopRollAudioProcessor::loopId, 0.0f);
+    setParam (*p, LoopRollAudioProcessor::divisionId, 4.0f);          // 1/16
+    setParam (*p, LoopRollAudioProcessor::refreshDivisionId, 4.0f);   // 1/4
+    setParam (*p, LoopRollAudioProcessor::refreshId, 1.0f);
+
+    render (*p, in, out, blockSize, [&] (int start)
+    {
+        if (start == loopStart)  setParam (*p, LoopRollAudioProcessor::loopId, 1.0f);
+    });
+
+    const double quarter = sixteenth * 4.0;
+    for (int k : { 1, 2, 9, 15 })
+    {
+        // La première répétition après le k-ième refresh rejoue l'audio capté à ce refresh.
+        const int refreshPoint = loopStart + (int) std::lround (k * quarter);
+        const int offset = findRepeatOffset (in, out, refreshPoint, refreshPoint + (int) std::lround (sixteenth));
+        check (std::abs (offset) <= 2, "refresh 1/4 : capture " + juce::String (k) + " hors grille (" + juce::String (offset) + ")");
+
+        // Et juste après le refresh, c'est le direct qui passe.
+        bool live = true;
+        for (int i = 0; i < 400; ++i)
+            live = live && juce::exactlyEqual (out.getSample (0, refreshPoint + 4 + i), in.getSample (0, refreshPoint + 4 + i));
+        check (live, "refresh 1/4 : pas de direct apres le refresh " + juce::String (k));
+    }
+
+    setParam (*p, LoopRollAudioProcessor::refreshId, 0.0f);
 
     // --- Arrêt puis mode free 100 ms ---
     setParam (*p, LoopRollAudioProcessor::loopId, 0.0f);
@@ -174,13 +203,34 @@ static void testParametersAndState()
     check (std::abs (time->convertFrom0to1 (time->getValueForText ("80")) - 80.0f) < 1.0f, "saisie '80'");
     check (std::abs (time->convertFrom0to1 (time->getValueForText ("120 ms")) - 120.0f) < 1.0f, "saisie '120 ms'");
 
+    // Sens des potards : valeur haute (potard à droite) = plus court.
+    check (time->convertTo0to1 (LoopRollAudioProcessor::minTimeMs) > 0.999f, "duree min doit etre a droite");
+    check (time->convertTo0to1 (LoopRollAudioProcessor::maxTimeMs) < 0.001f, "duree max doit etre a gauche");
+    check (time->convertFrom0to1 (0.75f) < time->convertFrom0to1 (0.25f), "le potard de duree n'est pas inverse");
+    check (std::abs (time->convertFrom0to1 (time->convertTo0to1 (123.0f)) - 123.0f) < 0.5f, "aller-retour 123 ms");
+    check (time->getText (time->convertTo0to1 (12.5f), 64) == "12.5 ms", "texte 12.5 ms : " + time->getText (time->convertTo0to1 (12.5f), 64));
+
     auto* division = apvts.getParameter (LoopRollAudioProcessor::divisionId);
+    check (division->getText (0.0f, 64) == "1/1" && division->getText (1.0f, 64) == "1/64", "sens du potard de division");
+    check (LoopRollAudioProcessor::getDivisionNames().size() == 7 && LoopRollAudioProcessor::getRefreshDivisionNames().size() == 8, "listes de divisions");
+    check (juce::approximatelyEqual (LoopRollAudioProcessor::getDivisionInBeats (4), 0.25), "1/16 = 0.25 noire");
+    check (juce::approximatelyEqual (LoopRollAudioProcessor::getRefreshDivisionInBeats (0), 16.0), "4/1 = 16 noires");
+
+    auto* refreshDivision = apvts.getParameter (LoopRollAudioProcessor::refreshDivisionId);
+    check (refreshDivision->getCurrentValueAsText() == "1/1", "intervalle de refresh par defaut : " + refreshDivision->getCurrentValueAsText());
+    check (refreshDivision->getText (0.0f, 64) == "4/1" && refreshDivision->getText (1.0f, 64) == "1/32", "sens du potard de refresh");
+    check (apvts.getParameter (LoopRollAudioProcessor::refreshId)->getValue() < 0.5f, "refresh eteint par defaut");
+    check (apvts.getParameter (LoopRollAudioProcessor::refreshTimeId)->getCurrentValueAsText() == "1.00 s", "intervalle free par defaut");
+
     check (division->getCurrentValueAsText() == "1/4", "division par defaut : " + division->getCurrentValueAsText());
     check (apvts.getParameter (LoopRollAudioProcessor::modeId)->getCurrentValueAsText() == "Sync", "mode par defaut");
 
     setParam (*a, LoopRollAudioProcessor::modeId, 0.0f);
     setParam (*a, LoopRollAudioProcessor::timeId, 777.0f);
     setParam (*a, LoopRollAudioProcessor::divisionId, 6.0f);
+    setParam (*a, LoopRollAudioProcessor::refreshId, 1.0f);
+    setParam (*a, LoopRollAudioProcessor::refreshTimeId, 2500.0f);
+    setParam (*a, LoopRollAudioProcessor::refreshDivisionId, 5.0f);
 
     juce::MemoryBlock state;
     a->getStateInformation (state);
@@ -191,7 +241,10 @@ static void testParametersAndState()
 
     check (restored.getParameter (LoopRollAudioProcessor::modeId)->getCurrentValueAsText() == "Free", "mode non restaure");
     check (restored.getParameter (LoopRollAudioProcessor::timeId)->getCurrentValueAsText() == "777 ms", "duree non restauree");
-    check (restored.getParameter (LoopRollAudioProcessor::divisionId)->getCurrentValueAsText() == "1/1", "division non restauree");
+    check (restored.getParameter (LoopRollAudioProcessor::divisionId)->getCurrentValueAsText() == "1/64", "division non restauree");
+    check (restored.getParameter (LoopRollAudioProcessor::refreshId)->getValue() > 0.5f, "refresh non restaure");
+    check (restored.getParameter (LoopRollAudioProcessor::refreshTimeId)->getCurrentValueAsText() == "2.50 s", "intervalle free non restaure");
+    check (restored.getParameter (LoopRollAudioProcessor::refreshDivisionId)->getCurrentValueAsText() == "1/8", "intervalle sync non restaure");
 
     // Un état corrompu ne doit rien casser.
     const char garbage[] = "pas un etat valide";
@@ -228,25 +281,36 @@ static void testEditor (const juce::File& outputDir)
 
     snapshot ("ui_sync");
 
+    setParam (*p, LoopRollAudioProcessor::divisionId, 4.0f);          // 1/16
+    setParam (*p, LoopRollAudioProcessor::refreshDivisionId, 4.0f);   // 1/4
+    setParam (*p, LoopRollAudioProcessor::refreshId, 1.0f);
+    setParam (*p, LoopRollAudioProcessor::loopId, 1.0f);
+    snapshot ("ui_sync_refresh_on");
+
     setParam (*p, LoopRollAudioProcessor::modeId, 0.0f);
     setParam (*p, LoopRollAudioProcessor::timeId, 1500.0f);
-    setParam (*p, LoopRollAudioProcessor::loopId, 1.0f);
-    snapshot ("ui_free_loop_on");
+    setParam (*p, LoopRollAudioProcessor::refreshTimeId, 4000.0f);
+    snapshot ("ui_free");
 
-    // L'interface suit bien les paramètres : en mode free c'est le potard de durée qui est visible.
-    int visibleSliders = 0;
-    juce::String shownText;
+    // L'interface suit bien les paramètres : en mode free ce sont les deux potards en ms qui sont visibles.
+    juce::StringArray shownTexts;
+    juce::Array<double> shownPositions;
     for (auto* child : editor->getChildren())
         if (auto* slider = dynamic_cast<juce::Slider*> (child))
             if (slider->isVisible())
             {
-                ++visibleSliders;
-                shownText = slider->getTextFromValue (slider->getValue());
+                shownTexts.add (slider->getTextFromValue (slider->getValue()));
+                shownPositions.add (slider->valueToProportionOfLength (slider->getValue()));
             }
 
-    check (visibleSliders == 1, "un seul potard doit etre visible (" + juce::String (visibleSliders) + ")");
-    check (shownText == "1.50 s", "valeur affichee en mode free : " + shownText);
+    check (shownTexts.size() == 2, "deux potards doivent etre visibles (" + juce::String (shownTexts.size()) + ")");
+    check (shownTexts.joinIntoString (" | ") == "1.50 s | 4.00 s", "valeurs affichees en mode free : " + shownTexts.joinIntoString (" | "));
 
+    // 1,5 s sur une plage 10 ms - 4 s : le potard doit être nettement à gauche (long = gauche).
+    check (shownPositions.size() == 2 && shownPositions[0] > 0.05 && shownPositions[0] < 0.3,
+           "position du potard de duree : " + juce::String (shownPositions.size() > 0 ? shownPositions[0] : -1.0));
+
+    p->editorBeingDeleted (editor.get());   // ce que fait un hôte avant de détruire l'interface
     editor.reset();
 }
 

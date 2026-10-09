@@ -107,12 +107,17 @@ LoopRollAudioProcessorEditor::LoopRollAudioProcessorEditor (LoopRollAudioProcess
 {
     setLookAndFeel (&lookAndFeel);
 
-    configureKnob (timeKnob);
-    configureKnob (divisionKnob);
-    divisionKnob.setTextBoxIsEditable (false);
+    auto& apvts = audioProcessor.apvts;
 
-    timeAttachment     = std::make_unique<APVTS::SliderAttachment> (audioProcessor.apvts, LoopRollAudioProcessor::timeId, timeKnob);
-    divisionAttachment = std::make_unique<APVTS::SliderAttachment> (audioProcessor.apvts, LoopRollAudioProcessor::divisionId, divisionKnob);
+    configureKnob (timeKnob, true);
+    configureKnob (divisionKnob, false);
+    configureKnob (refreshTimeKnob, true);
+    configureKnob (refreshDivisionKnob, false);
+
+    timeAttachment            = std::make_unique<APVTS::SliderAttachment> (apvts, LoopRollAudioProcessor::timeId, timeKnob);
+    divisionAttachment        = std::make_unique<APVTS::SliderAttachment> (apvts, LoopRollAudioProcessor::divisionId, divisionKnob);
+    refreshTimeAttachment     = std::make_unique<APVTS::SliderAttachment> (apvts, LoopRollAudioProcessor::refreshTimeId, refreshTimeKnob);
+    refreshDivisionAttachment = std::make_unique<APVTS::SliderAttachment> (apvts, LoopRollAudioProcessor::refreshDivisionId, refreshDivisionKnob);
 
     // Sélecteur FREE | SYNC
     for (auto* b : { &freeButton, &syncButton })
@@ -125,19 +130,24 @@ LoopRollAudioProcessorEditor::LoopRollAudioProcessorEditor (LoopRollAudioProcess
     freeButton.setConnectedEdges (juce::Button::ConnectedOnRight);
     syncButton.setConnectedEdges (juce::Button::ConnectedOnLeft);
 
-    modeAttachment = std::make_unique<juce::ParameterAttachment> (*audioProcessor.apvts.getParameter (LoopRollAudioProcessor::modeId),
+    modeAttachment = std::make_unique<juce::ParameterAttachment> (*apvts.getParameter (LoopRollAudioProcessor::modeId),
                                                                   [this] (float value) { showMode (value > 0.5f); });
     freeButton.onClick = [this] { modeAttachment->setValueAsCompleteGesture (0.0f); };
     syncButton.onClick = [this] { modeAttachment->setValueAsCompleteGesture (1.0f); };
     modeAttachment->sendInitialUpdate();
 
-    // LOOP : bouton à bascule
-    loopButton.setClickingTogglesState (true);
-    loopButton.setWantsKeyboardFocus (false);
-    addAndMakeVisible (loopButton);
-    loopAttachment = std::make_unique<APVTS::ButtonAttachment> (audioProcessor.apvts, LoopRollAudioProcessor::loopId, loopButton);
+    // LOOP et REFRESH : boutons à bascule
+    configureToggle (loopButton);
+    configureToggle (refreshButton);
+    loopAttachment    = std::make_unique<APVTS::ButtonAttachment> (apvts, LoopRollAudioProcessor::loopId, loopButton);
+    refreshAttachment = std::make_unique<APVTS::ButtonAttachment> (apvts, LoopRollAudioProcessor::refreshId, refreshButton);
 
-    setSize (280, 400);
+    // Le potard de refresh est estompé tant que le refresh est éteint (il reste réglable).
+    refreshStateAttachment = std::make_unique<juce::ParameterAttachment> (*apvts.getParameter (LoopRollAudioProcessor::refreshId),
+                                                                          [this] (float value) { showRefreshState (value > 0.5f); });
+    refreshStateAttachment->sendInitialUpdate();
+
+    setSize (460, 420);
 }
 
 LoopRollAudioProcessorEditor::~LoopRollAudioProcessorEditor()
@@ -145,12 +155,19 @@ LoopRollAudioProcessorEditor::~LoopRollAudioProcessorEditor()
     setLookAndFeel (nullptr);
 }
 
-void LoopRollAudioProcessorEditor::configureKnob (juce::Slider& knob)
+void LoopRollAudioProcessorEditor::configureKnob (juce::Slider& knob, bool editableText)
 {
     addChildComponent (knob);   // d'abord : la zone de texte prend ses couleurs du look du parent
     knob.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-    knob.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 120, 28);
+    knob.setTextBoxStyle (juce::Slider::TextBoxBelow, ! editableText, 120, 28);
     knob.setWantsKeyboardFocus (false);
+}
+
+void LoopRollAudioProcessorEditor::configureToggle (juce::TextButton& button)
+{
+    button.setClickingTogglesState (true);
+    button.setWantsKeyboardFocus (false);
+    addAndMakeVisible (button);
 }
 
 void LoopRollAudioProcessorEditor::showMode (bool sync)
@@ -159,6 +176,15 @@ void LoopRollAudioProcessorEditor::showMode (bool sync)
     syncButton.setToggleState (sync, juce::dontSendNotification);
     timeKnob.setVisible (! sync);
     divisionKnob.setVisible (sync);
+    refreshTimeKnob.setVisible (! sync);
+    refreshDivisionKnob.setVisible (sync);
+}
+
+void LoopRollAudioProcessorEditor::showRefreshState (bool enabled)
+{
+    const float alpha = enabled ? 1.0f : 0.4f;
+    refreshTimeKnob.setAlpha (alpha);
+    refreshDivisionKnob.setAlpha (alpha);
 }
 
 void LoopRollAudioProcessorEditor::paint (juce::Graphics& g)
@@ -168,6 +194,10 @@ void LoopRollAudioProcessorEditor::paint (juce::Graphics& g)
     g.setColour (LoopRollLookAndFeel::dimText());
     g.setFont (juce::Font (juce::FontOptions().withHeight (13.0f).withStyle ("Bold")).withExtraKerningFactor (0.25f));
     g.drawText ("LOOPROLL", getLocalBounds().removeFromTop (44), juce::Justification::centred);
+
+    g.setFont (juce::Font (juce::FontOptions().withHeight (11.0f).withStyle ("Bold")).withExtraKerningFactor (0.15f));
+    g.drawText ("LENGTH", lengthLabelArea, juce::Justification::centred);
+    g.drawText ("REFRESH EVERY", refreshLabelArea, juce::Justification::centred);
 }
 
 void LoopRollAudioProcessorEditor::resized()
@@ -176,7 +206,13 @@ void LoopRollAudioProcessorEditor::resized()
     area.removeFromTop (44);
     area.removeFromBottom (24);
 
-    loopButton.setBounds (area.removeFromBottom (56));
+    const int gap = 16;
+    const int columnWidth = (area.getWidth() - gap) / 2;
+
+    // Chaque bouton est sous son potard : LOOP sous la durée, REFRESH sous l'intervalle.
+    auto buttonRow = area.removeFromBottom (56);
+    loopButton.setBounds (buttonRow.removeFromLeft (columnWidth));
+    refreshButton.setBounds (buttonRow.removeFromRight (columnWidth));
     area.removeFromBottom (16);
 
     auto modeRow = area.removeFromBottom (32);
@@ -184,6 +220,14 @@ void LoopRollAudioProcessorEditor::resized()
     syncButton.setBounds (modeRow);
     area.removeFromBottom (12);
 
-    timeKnob.setBounds (area);
-    divisionKnob.setBounds (area);
+    auto lengthColumn = area.removeFromLeft (columnWidth);
+    auto refreshColumn = area.removeFromRight (columnWidth);
+
+    lengthLabelArea = lengthColumn.removeFromTop (18);
+    refreshLabelArea = refreshColumn.removeFromTop (18);
+
+    timeKnob.setBounds (lengthColumn);
+    divisionKnob.setBounds (lengthColumn);
+    refreshTimeKnob.setBounds (refreshColumn);
+    refreshDivisionKnob.setBounds (refreshColumn);
 }

@@ -13,14 +13,26 @@ public:
     static constexpr const char* modeId     = "mode";
     static constexpr const char* timeId     = "time";
     static constexpr const char* divisionId = "division";
+    static constexpr const char* refreshId         = "refresh";
+    static constexpr const char* refreshTimeId     = "refreshTime";
+    static constexpr const char* refreshDivisionId = "refreshDivision";
 
+    // Plages du mode free (ms)
     static constexpr float minTimeMs = 10.0f;
     static constexpr float maxTimeMs = 4000.0f;
+    static constexpr float minRefreshMs = 50.0f;
+    static constexpr float maxRefreshMs = 16000.0f;
 
-    /** Divisions du mode sync, de la plus courte à la plus longue. */
+    // Les deux potards vont du plus long (à gauche) au plus court (à droite).
+
+    /** Divisions de la boucle en mode sync, de la plus longue à la plus courte. */
     static const juce::StringArray& getDivisionNames();
     /** Durée d'une division en noires (1/4 = 1). */
     static double getDivisionInBeats (int index);
+
+    /** Intervalles de refresh en mode sync, du plus long au plus court. */
+    static const juce::StringArray& getRefreshDivisionNames();
+    static double getRefreshDivisionInBeats (int index);
 
     //==========================================================================
     LoopRollAudioProcessor();
@@ -65,10 +77,14 @@ private:
     std::atomic<float>* modeParam = nullptr;
     std::atomic<float>* timeParam = nullptr;
     std::atomic<float>* divisionParam = nullptr;
+    std::atomic<float>* refreshParam = nullptr;
+    std::atomic<float>* refreshTimeParam = nullptr;
+    std::atomic<float>* refreshDivisionParam = nullptr;
 
     double currentSampleRate = 44100.0;
     double lastBpm = 120.0;
     int lastDivision = -1;
+    int lastRefreshDivision = -1;
     bool lastSync = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LoopRollAudioProcessor)

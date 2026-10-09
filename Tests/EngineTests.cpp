@@ -33,7 +33,7 @@ static std::vector<float> makeSine (int n, double freq, float amp)
     return v;
 }
 
-struct Event { int sample; int type; double value; bool reanchor; };   // type 0 = on/off, 1 = durée
+struct Event { int sample; int type; double value; bool reanchor; double value2 = 0.0; };   // type 0 = on/off, 1 = durée, 2 = refresh (value = on/off, value2 = intervalle)
 
 // Fait tourner le moteur en mono, par blocs, en appliquant les évènements au début du bloc qui les contient.
 static std::vector<float> run (LooperEngine& engine, const std::vector<float>& in, std::vector<Event> events, int blockSize)
@@ -48,8 +48,9 @@ static std::vector<float> run (LooperEngine& engine, const std::vector<float>& i
         while (next < events.size() && events[next].sample <= start)
         {
             const auto& e = events[next++];
-            if (e.type == 0) engine.setActive (e.value > 0.5);
-            else             engine.setLoopLength (e.value, e.reanchor);
+            if (e.type == 0)      engine.setActive (e.value > 0.5);
+            else if (e.type == 1) engine.setLoopLength (e.value, e.reanchor);
+            else                  engine.setRefresh (e.value > 0.5, e.value2, e.reanchor);
         }
 
         float* channel[1] = { out.data() + start };
@@ -313,9 +314,160 @@ static void testRetriggerAndCapacity()
     CHECK (dry, "ne revient pas au signal direct a la fin");
 }
 
+static void testRefresh()
+{
+    std::printf ("8. Refresh : recapture periodique exacte, sans clic, sans derive\n");
+
+    // --- Contenu exact : boucle de 5000, refresh tous les 20000 ---
+    {
+        const int L = 5000, R = 20000, S = 4096, N = S + 5 * R + 3000;
+
+        LooperEngine e;
+        e.prepare (kSampleRate, 1, 8.0);
+        e.setLoopLength ((double) L, false);
+        e.setRefresh (true, (double) R, false);
+
+        const auto in = makeNoise (N, 8);
+        const auto out = run (e, in, { { S, 0, 1.0, false } }, 512);
+
+        int badLive = 0, badRepeat = 0, badFirst = 0;
+
+        for (int k = 0; k < 5; ++k)
+        {
+            const int T = S + k * R;   // début de la k-ième capture
+
+            // Le tout premier échantillon de chaque capture est le direct, à plein niveau.
+            badFirst += out[(size_t) T] == in[(size_t) T] ? 0 : 1;
+
+            // Premier passage = direct.
+            for (int t = T; t < T + L - kFade; ++t)
+                badLive += out[(size_t) t] == in[(size_t) t] ? 0 : 1;
+
+            // Ensuite la boucle répète CETTE capture, jusqu'au fondu qui précède le refresh suivant.
+            for (int t = T + L + kFade; t < T + R - kFade; ++t)
+            {
+                const int p = (t - T) % L;
+                if (p < L - kFade)
+                    badRepeat += out[(size_t) t] == in[(size_t) (T + p)] ? 0 : 1;
+            }
+        }
+
+        CHECK (badFirst == 0, "debut de capture altere (%d)", badFirst);
+        CHECK (badLive == 0, "premier passage apres refresh different du direct (%d echantillons)", badLive);
+        CHECK (badRepeat == 0, "la boucle ne repete pas la derniere capture (%d echantillons)", badRepeat);
+    }
+
+    // --- Pas de clic (sinus, durées non multiples de la période) ---
+    {
+        const int S = 3000, N = 150000;
+        LooperEngine e;
+        e.prepare (kSampleRate, 1, 8.0);
+        e.setLoopLength (5003.0, false);
+        e.setRefresh (true, 20011.0, false);
+
+        const auto in = makeSine (N, 55.0, 0.8f);
+        const auto out = run (e, in, { { S, 0, 1.0, false }, { 120000, 0, 0.0, false } }, 256);
+        const float worst = maxStep (out, 0, N);
+        std::printf ("   pente max avec refresh : %.4f\n", worst);
+        CHECK (worst < 0.03f, "clic au refresh : %.4f", worst);
+    }
+
+    // --- Sync 174 BPM : boucle 1/16, refresh 1/4, pas de dérive après 150 refresh ---
+    {
+        const double Lf = 60.0 / 174.0 / 4.0 * kSampleRate;   // 3801,72
+        const double Rf = Lf * 4.0;                             // 15206,90
+        const int S = 960;
+        const int N = S + (int) (Rf * 153.0);
+
+        LooperEngine e;
+        e.prepare (kSampleRate, 1, 8.0);
+        e.setLoopLength (Lf, true);
+        e.setRefresh (true, Rf, true);
+
+        const auto in = makeNoise (N, 9);
+        const auto out = run (e, in, { { S, 0, 1.0, false } }, 480);
+
+        int bad = 0, worstOffset = 0;
+
+        for (int k = 140; k < 150; ++k)
+        {
+            const int ideal = S + (int) std::lround (k * Rf);       // point de refresh idéal
+            const int repeat = ideal + (int) std::lround (Lf);      // début de la première répétition
+            int found = 999;
+
+            // La répétition rejoue le début de la capture : on retrouve où elle a démarré.
+            for (int d = -3; d <= 3 && found == 999; ++d)
+            {
+                bool match = true;
+                for (int i = 200; i < 1200 && match; ++i)
+                    match = out[(size_t) (repeat + i)] == in[(size_t) (ideal + d + i)];
+                if (match) found = d;
+            }
+
+            if (found == 999) ++bad; else worstOffset = std::max (worstOffset, std::abs (found));
+        }
+
+        std::printf ("   decalage max du point de refresh : %d echantillon(s)\n", worstOffset);
+        CHECK (bad == 0, "%d refresh hors grille", bad);
+        CHECK (worstOffset <= 2, "derive du refresh de %d echantillons", worstOffset);
+    }
+
+    // --- Refresh allumé en cours de boucle : il tombe sur la grille de l'activation ---
+    {
+        const int L = 5000, R = 20000, S = 2048, ON = S + 33024, N = S + 70000;
+
+        LooperEngine e;
+        e.prepare (kSampleRate, 1, 8.0);
+        e.setLoopLength ((double) L, true);
+
+        const auto in = makeNoise (N, 10);
+        const auto out = run (e, in, { { S, 0, 1.0, false }, { ON, 2, 1.0, true, (double) R }, { S + 50048, 2, 0.0, true, (double) R } }, 128);
+
+        const int T = S + 2 * R;   // premier point de grille après l'allumage
+        int bad = 0;
+
+        for (int t = ON + 256; t < T - kFade; ++t)   // avant : toujours la capture d'origine
+        {
+            const int p = (t - S) % L;
+            if (p < L - kFade) bad += out[(size_t) t] == in[(size_t) (S + p)] ? 0 : 1;
+        }
+        CHECK (bad == 0, "la boucle d'origine est perturbee avant le refresh (%d)", bad);
+
+        bad = 0;
+        for (int t = T; t < T + L - kFade; ++t)
+            bad += out[(size_t) t] == in[(size_t) t] ? 0 : 1;
+        CHECK (bad == 0, "pas de recapture sur la grille (%d)", bad);
+
+        // Refresh éteint ensuite : plus de recapture, la dernière capture continue de tourner.
+        bad = 0;
+        for (int t = T + L + kFade; t < N; ++t)
+        {
+            const int p = (t - T) % L;
+            if (p < L - kFade) bad += out[(size_t) t] == in[(size_t) (T + p)] ? 0 : 1;
+        }
+        CHECK (bad == 0, "la boucle change encore apres l'arret du refresh (%d)", bad);
+    }
+
+    // --- Intervalle plus court que la boucle : le direct passe ---
+    {
+        const int S = 1024, N = 60000;
+        LooperEngine e;
+        e.prepare (kSampleRate, 1, 8.0);
+        e.setLoopLength (8000.0, false);
+        e.setRefresh (true, 3000.0, false);
+
+        const auto in = makeNoise (N, 11);
+        const auto out = run (e, in, { { S, 0, 1.0, false } }, 256);
+
+        bool same = true;
+        for (size_t i = 0; i < in.size(); ++i) same = same && in[i] == out[i];
+        CHECK (same, "refresh plus court que la boucle : la sortie devrait etre le direct");
+    }
+}
+
 static void testFuzz()
 {
-    std::printf ("8. Fuzz : blocs, durees, modes et activations aleatoires (stereo, plusieurs frequences d'echantillonnage)\n");
+    std::printf ("9. Fuzz : blocs, durees, modes et activations aleatoires (stereo, plusieurs frequences d'echantillonnage)\n");
     std::mt19937 rng (1234);
 
     for (double sr : { 22050.0, 44100.0, 48000.0, 96000.0, 192000.0 })
@@ -336,6 +488,7 @@ static void testFuzz()
 
             if (u (rng) < 0.08) { active = ! active; e.setActive (active); }
             if (u (rng) < 0.30) e.setLoopLength (std::pow (10.0, u (rng) * 6.0 - 0.5), u (rng) < 0.5);
+            if (u (rng) < 0.25) e.setRefresh (u (rng) < 0.7, std::pow (10.0, u (rng) * 6.5 - 0.5), u (rng) < 0.5);
             if (u (rng) < 0.002) e.reset();
 
             float* io[2] = { l.data(), r.data() };
@@ -359,6 +512,7 @@ int main()
     testReanchor();
     testFreeLengthChange();
     testRetriggerAndCapacity();
+    testRefresh();
     testFuzz();
 
     std::printf (failures == 0 ? "\nTOUS LES TESTS PASSENT\n" : "\n%d ECHEC(S)\n", failures);

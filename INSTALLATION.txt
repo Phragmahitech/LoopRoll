@@ -27,9 +27,17 @@ Windows (64 bits)
 
 Utilisation
 -----------
-LOOP   Allume : capture l'audio a partir de cet instant puis le repete.
-       Eteint : retour au signal direct.
-SYNC   La duree suit le tempo du projet : 1/64, 1/32, 1/16, 1/8, 1/4, 1/2, 1/1.
-FREE   Duree libre de 10 ms a 4 s (clic sur la valeur pour la saisir au clavier).
+LOOP           Allume : capture l'audio a partir de cet instant puis le repete.
+               Eteint : retour au signal direct.
+LENGTH         Duree de la boucle. Tourner a droite raccourcit.
+REFRESH        Allume : la boucle est recapturee a intervalle regulier.
+REFRESH EVERY  Intervalle entre deux recaptures. Tourner a droite = plus frequent.
+SYNC           Les deux potards suivent le tempo du projet
+               (boucle : 1/1 a 1/64, refresh : 4 mesures a 1/32).
+FREE           Durees libres (boucle : 4 s a 10 ms, refresh : 16 s a 50 ms).
+               Clic sur la valeur pour la saisir au clavier.
 
-Les trois controles sont automatisables et assignables en MIDI depuis le DAW.
+Exemple : LENGTH 1/16 + REFRESH EVERY 1/4 = un seizieme de direct puis trois
+repetitions, a chaque noire.
+
+Tous les controles sont automatisables et assignables en MIDI depuis le DAW.

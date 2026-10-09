@@ -22,6 +22,11 @@
       - les sauts de position (changement de division) et l'arrêt de la
         boucle passent par un fondu court.
 
+    Refresh : à intervalle régulier, la boucle est recapturée. Juste avant le
+    point de refresh, la boucle en cours est fondue vers l'entrée en direct ;
+    la nouvelle capture démarre donc elle aussi sur un échantillon à plein
+    niveau, et le premier passage est de nouveau l'audio en direct.
+
     Tout est alloué dans prepare() : process() ne fait ni allocation ni verrou.
 */
 class LooperEngine
@@ -52,11 +57,14 @@ public:
         gate = 0.0f;
         fading = false;
         pendingReanchor = false;
+        refreshFading = false;
         historyPos = 0;
         captured = 0;
         elapsed = 0;
+        totalElapsed = 0;
         pos = 0;
         iterPos = 0.0;
+        refreshPos = 0.0;
 
         for (auto& h : history)
             std::fill (h.begin(), h.end(), 0.0f);
@@ -93,6 +101,32 @@ public:
             else
                 applyReanchor();
         }
+    }
+
+    /**
+        Refresh périodique : tous les "intervalInSamples", la boucle est recapturée
+        avec l'audio du moment. Les points de refresh sont comptés depuis l'activation.
+
+        reanchor = true  : après un changement d'intervalle, les points de refresh
+                           restent calés sur la grille de l'activation (mode sync).
+        reanchor = false : seul le prochain point de refresh bouge (mode free).
+
+        Un intervalle plus court que la boucle revient à laisser passer le direct.
+    */
+    void setRefresh (bool enabled, double intervalInSamples, bool reanchor) noexcept
+    {
+        double newInterval = std::isnan (intervalInSamples) ? 1.0e12 : intervalInSamples;
+        newInterval = std::max ((double) (minLoop * 2), std::min (newInterval, 1.0e12));
+
+        const bool changed = std::abs (newInterval - refreshInterval) > 1.0e-9;
+        const bool turnedOn = enabled && ! refreshEnabled;
+
+        refreshEnabled = enabled;
+        refreshInterval = newInterval;
+
+        // À l'allumage (ou sur changement de division), on se recale sur la grille de l'activation.
+        if (state == State::looping && ! refreshFading && (turnedOn || (reanchor && changed)))
+            refreshPos = std::fmod ((double) totalElapsed, refreshInterval);
     }
 
     bool isLooping() const noexcept                  { return state == State::looping; }
@@ -132,6 +166,14 @@ public:
                 fadeGain = t * t * (3.0f - 2.0f * t);
             }
 
+            float refreshGain = 0.0f;
+
+            if (refreshFading)
+            {
+                const float t = (float) (refreshFadeCount + 1) / (float) (refreshFadeLength + 1);
+                refreshGain = t * t * (3.0f - 2.0f * t);
+            }
+
             const std::size_t indexA = bufferIndex (pos, canCapture);
             const std::size_t indexB = fading ? bufferIndex (posB, canCapture) : indexA;
 
@@ -150,6 +192,9 @@ public:
                 if (fading)
                     wet += fadeGain * (buf[indexB] - wet);
 
+                if (refreshFading)
+                    wet += refreshGain * (in - wet);   // la boucle sortante s'efface vers le direct
+
                 // gate == 1 : copie exacte de l'enregistrement (pas d'arrondi flottant)
                 io[ch][n] = gate >= 1.0f ? wet : in + gate * (wet - in);
             }
@@ -161,6 +206,7 @@ public:
 
             ++pos;
             ++elapsed;
+            ++totalElapsed;
             iterPos += 1.0;
 
             if (fading)
@@ -177,6 +223,18 @@ public:
 
             if (state == State::looping)
             {
+                refreshPos += 1.0;
+
+                if (refreshFading)
+                {
+                    if (++refreshFadeCount >= refreshFadeLength)
+                        finishRefresh();
+                }
+                else if (refreshEnabled && refreshInterval - refreshPos <= (double) fadeFor (refreshInterval))
+                {
+                    startRefreshFade (refreshInterval - refreshPos);
+                }
+
                 if (! wantActive)
                     state = State::releasing;
                 else
@@ -192,6 +250,7 @@ public:
                     gate = 0.0f;
                     fading = false;
                     pendingReanchor = false;
+                    refreshFading = false;
                     state = State::idle;     // si wantActive est revenu, une nouvelle capture démarre à l'échantillon suivant
                 }
             }
@@ -229,7 +288,8 @@ private:
         return (std::size_t) (preRoll + std::max (-preRoll, std::min (p, lastValid)));
     }
 
-    void startLoop() noexcept
+    /** Démarre une capture à l'échantillon suivant (activation ou refresh). */
+    void beginCapture() noexcept
     {
         // Le pré-roll = les dernières millisecondes d'entrée, dans l'ordre chronologique.
         for (std::size_t ch = 0; ch < buffer.size(); ++ch)
@@ -248,8 +308,43 @@ private:
         iterPos = 0.0;
         fading = false;
         pendingReanchor = false;
+    }
+
+    void startLoop() noexcept
+    {
+        beginCapture();
+        totalElapsed = 0;
+        refreshPos = 0.0;
+        refreshFading = false;
         gate = 0.0f;
         state = State::looping;
+    }
+
+    /** Fondu de la boucle en cours vers le direct, qui se termine pile sur le point de refresh. */
+    void startRefreshFade (double remaining) noexcept
+    {
+        const int maxLen = fadeFor (refreshInterval);
+        const int minLen = std::min (maxLen, std::max (16, maxFade / 4));
+        int n = maxLen;
+        double carry = 0.0;
+
+        if (remaining >= 0.0)
+        {
+            n = std::max (minLen, std::min (maxLen, (int) std::lround (remaining)));
+            carry = (double) n - remaining;   // fraction d'échantillon reportée -> pas de dérive
+        }
+
+        refreshFadeLength = n;
+        refreshFadeCount = 0;
+        refreshCarry = carry;
+        refreshFading = true;
+    }
+
+    void finishRefresh() noexcept
+    {
+        refreshFading = false;
+        refreshPos = refreshCarry;
+        beginCapture();   // le gate reste ouvert : le premier passage est le direct, sans transition
     }
 
     /** Fondu de la lecture en cours vers le pré-roll, qui débouche pile sur le début de boucle. */
@@ -342,11 +437,19 @@ private:
     double requestedLength = 22050.0;   // dernière durée demandée
     double length = 22050.0;            // durée utilisée par la boucle en cours
     double iterPos = 0.0;               // position dans l'itération courante (fractionnaire)
-    std::int64_t elapsed = 0;           // échantillons depuis l'activation
+    std::int64_t elapsed = 0;           // échantillons depuis le début de la capture en cours
     int captured = 0;                   // échantillons enregistrés
     int pos = 0;                        // tête de lecture principale
 
     bool fading = false, fadeIsWrap = false, pendingReanchor = false;
     int posB = 0, fadeLength = 0, fadeCount = 0;
     double fadeCarry = 0.0;
+
+    // Refresh
+    bool refreshEnabled = false, refreshFading = false;
+    double refreshInterval = 88200.0;   // intervalle demandé
+    double refreshPos = 0.0;            // position dans l'intervalle courant (fractionnaire)
+    double refreshCarry = 0.0;
+    std::int64_t totalElapsed = 0;      // échantillons depuis l'activation de la boucle
+    int refreshFadeLength = 0, refreshFadeCount = 0;
 };

@@ -3,10 +3,15 @@
 Effet audio VST3 de type looper / beat-repeat, pour macOS et Windows.
 
 - **LOOP** : capture l'audio à partir de l'instant où tu l'allumes, puis le répète. Éteint = signal direct.
-- **Potard de durée** : un seul potard, deux modes.
-  - **SYNC** : calé sur le tempo de l'hôte — 1/64, 1/32, 1/16, 1/8, 1/4, 1/2, 1/1.
-  - **FREE** : durée libre de 10 ms à 4 s.
-- Mono et stéréo, latence nulle, les trois contrôles sont automatisables.
+- **LENGTH** : durée de la boucle. Tourner à droite raccourcit.
+  - **SYNC** : calé sur le tempo de l'hôte — 1/1, 1/2, 1/4, 1/8, 1/16, 1/32, 1/64.
+  - **FREE** : durée libre de 4 s à 10 ms.
+- **REFRESH** : quand il est allumé, la boucle est recapturée à intervalle régulier avec l'audio du moment.
+- **REFRESH EVERY** : intervalle entre deux recaptures. Tourner à droite = plus fréquent.
+  - **SYNC** : 4/1 (4 mesures), 2/1, 1/1, 1/2, 1/4, 1/8, 1/16, 1/32.
+  - **FREE** : de 16 s à 50 ms.
+- Le sélecteur FREE / SYNC s'applique aux deux potards.
+- Mono et stéréo, latence nulle, tous les contrôles sont automatisables. Le sens des potards est celui des paramètres : en automation ou en mapping MIDI aussi, monter la valeur raccourcit.
 
 ## Comportement
 
@@ -14,6 +19,9 @@ Effet audio VST3 de type looper / beat-repeat, pour macOS et Windows.
 - Le raccord de boucle est fondu sur 3 ms **avant** la fin de boucle, vers l'audio qui précédait le point de capture. Le début de la boucle est donc toujours rejoué à plein niveau : un kick capté sur le temps garde son attaque à chaque répétition.
 - En SYNC, changer de division pendant la boucle garde la grille calée sur le point de départ (passer de 1/4 à 1/16 puis revenir à 1/4 retombe sur les mêmes temps). La durée est suivie à la fraction d'échantillon : pas de dérive sur la longueur.
 - En FREE, tourner le potard pendant la boucle ne déplace que la fin de boucle.
+- REFRESH : à chaque point de refresh, une nouvelle capture démarre. On entend donc un passage de direct (une durée de boucle), puis ses répétitions jusqu'au refresh suivant. Exemple : LENGTH 1/16 et REFRESH EVERY 1/4 = un seizième de direct, puis trois répétitions, à chaque noire.
+- Les points de refresh sont comptés depuis l'allumage de LOOP, sans dérive. Allumer REFRESH en cours de boucle le fait tomber sur le prochain point de cette grille. Juste avant chaque refresh, la boucle sortante est fondue sur 3 ms vers le direct : la nouvelle capture démarre à plein niveau.
+- Si l'intervalle de refresh est plus court que la boucle, rien n'a le temps de se répéter : c'est le direct qui passe.
 - Si l'hôte ne fournit pas de tempo, le dernier tempo connu est utilisé (120 BPM par défaut).
 - La capture démarre au début du bloc audio dans lequel LOOP passe à ON : la précision dépend de la taille de buffer du DAW (≈ 3 ms à 128 échantillons, ≈ 12 ms à 512). Il n'y a pas de quantification du départ sur la grille.
 
@@ -57,7 +65,7 @@ Le plugin est dans `build/LoopRoll_artefacts/Release/VST3/LoopRoll.vst3` ; avec 
 | `Source/LooperEngine.h` | Tout le traitement audio. Aucune dépendance, testable seul. |
 | `Source/PluginProcessor.*` | Paramètres, lecture du tempo de l'hôte, sauvegarde d'état. |
 | `Source/PluginEditor.*` | Interface. |
-| `Tests/EngineTests.cpp` | Tests du moteur : boucle exacte, absence de clics, grille sans dérive, changements de durée, fuzz. |
+| `Tests/EngineTests.cpp` | Tests du moteur : boucle exacte, absence de clics, grille sans dérive, changements de durée, refresh, fuzz. |
 | `Tests/PluginTests.cpp` | Tests du plugin complet : sync au tempo, modes, état, interface. |
 
 Lancer les tests : ajouter `-DLOOPROLL_BUILD_TESTS=ON` à la configuration, compiler, puis `ctest --test-dir build -C Release --output-on-failure`.
@@ -65,8 +73,8 @@ Lancer les tests : ajouter `-DLOOPROLL_BUILD_TESTS=ON` à la configuration, comp
 Réglages rapides :
 
 - Nom d'éditeur affiché dans le DAW : `LOOPROLL_COMPANY_NAME` en haut de `CMakeLists.txt`.
-- Divisions du mode sync : `getDivisionNames()` et `getDivisionInBeats()` dans `PluginProcessor.cpp` (les deux listes doivent rester alignées).
-- Plage du mode free : `minTimeMs` / `maxTimeMs` dans `PluginProcessor.h`.
+- Divisions du mode sync : `getDivisionNames()` / `getDivisionInBeats()` pour la boucle, `getRefreshDivisionNames()` / `getRefreshDivisionInBeats()` pour le refresh, dans `PluginProcessor.cpp`. Dans chaque paire les deux listes doivent rester alignées, de la plus longue à la plus courte.
+- Plages du mode free : `minTimeMs` / `maxTimeMs` et `minRefreshMs` / `maxRefreshMs` dans `PluginProcessor.h`.
 
 Ne pas changer `PLUGIN_CODE`, `PLUGIN_MANUFACTURER_CODE` ni les identifiants de paramètres une fois le plugin utilisé dans des projets : les DAW ne retrouveraient plus le plugin ou ses automations.
 

@@ -2,7 +2,7 @@
 
 #include "PluginProcessor.h"
 
-/** Look minimal : fond sombre, un potard à arc, boutons plats. */
+/** Look minimal : fond sombre, potards à arc, boutons plats. */
 class LoopRollLookAndFeel final : public juce::LookAndFeel_V4
 {
 public:
@@ -37,19 +37,23 @@ public:
 private:
     using APVTS = juce::AudioProcessorValueTreeState;
 
-    void configureKnob (juce::Slider&);
+    void configureKnob (juce::Slider&, bool editableText);
+    void configureToggle (juce::TextButton&);
     void showMode (bool sync);
+    void showRefreshState (bool enabled);
 
     LoopRollAudioProcessor& audioProcessor;
     LoopRollLookAndFeel lookAndFeel;
 
-    // Un seul potard à l'écran : deux sliders superposés, un par mode.
-    juce::Slider timeKnob, divisionKnob;
-    juce::TextButton freeButton { "FREE" }, syncButton { "SYNC" }, loopButton { "LOOP" };
+    // Deux potards à l'écran (durée de boucle, intervalle de refresh). Chacun est fait de
+    // deux sliders superposés, un par mode : ms en FREE, divisions en SYNC.
+    juce::Slider timeKnob, divisionKnob, refreshTimeKnob, refreshDivisionKnob;
+    juce::TextButton freeButton { "FREE" }, syncButton { "SYNC" }, loopButton { "LOOP" }, refreshButton { "REFRESH" };
+    juce::Rectangle<int> lengthLabelArea, refreshLabelArea;
 
-    std::unique_ptr<APVTS::SliderAttachment> timeAttachment, divisionAttachment;
-    std::unique_ptr<APVTS::ButtonAttachment> loopAttachment;
-    std::unique_ptr<juce::ParameterAttachment> modeAttachment;
+    std::unique_ptr<APVTS::SliderAttachment> timeAttachment, divisionAttachment, refreshTimeAttachment, refreshDivisionAttachment;
+    std::unique_ptr<APVTS::ButtonAttachment> loopAttachment, refreshAttachment;
+    std::unique_ptr<juce::ParameterAttachment> modeAttachment, refreshStateAttachment;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LoopRollAudioProcessorEditor)
 };
