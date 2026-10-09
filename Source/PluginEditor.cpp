@@ -850,22 +850,24 @@ void LoopRollAudioProcessorEditor::paintModules (juce::Graphics& g)
 
 void LoopRollAudioProcessorEditor::paintReadouts (juce::Graphics& g)
 {
-    // En-tête
+    // En-tête : nom du plugin, signature, et numéro de version à droite
+    const auto titleFont = lookAndFeel.font (20.0f, true, 0.24f);
+    const auto titleArea = juce::Rectangle<float> (36.0f, 16.0f, 300.0f, 48.0f);
+
     g.setColour (LF::ink());
-    g.setFont (lookAndFeel.font (20.0f, true, 0.24f));
-    g.drawText ("LOOPROLL", juce::Rectangle<int> (36, 16, 300, 48), juce::Justification::centredLeft, false);
+    g.setFont (titleFont);
+    g.drawText ("FRAGMENT", titleArea, juce::Justification::centredLeft, false);
 
-    const auto brandFont = lookAndFeel.font (11.0f, false, 0.26f);
-    const float brandWidth = textWidth (brandFont, "PHRAGMA");
-    const auto brandArea = juce::Rectangle<float> ((float) editorWidth - 336.0f, 16.0f, 300.0f, 48.0f);
-
+    // La signature est posée sur la même ligne de base que le nom (d'où le décalage vers le bas).
     g.setColour (LF::dimInk());
-    g.setFont (brandFont);
-    g.drawText ("PHRAGMA", brandArea, juce::Justification::centredRight, false);
+    g.setFont (lookAndFeel.font (11.0f, false, 0.26f));
+    g.drawText ("BY PHRAGMA", titleArea.withTrimmedLeft (textWidth (titleFont, "FRAGMENT") + 18.0f).translated (0.0f, 2.5f),
+                juce::Justification::centredLeft, false);
 
     // Numéro de version : pour vérifier d'un coup d'œil quelle version le DAW a chargée
-    g.setFont (lookAndFeel.font (10.0f, false, 0.08f));
-    g.drawText ("V" LOOPROLL_VERSION, brandArea.withTrimmedRight (brandWidth + 16.0f), juce::Justification::centredRight, false);
+    g.setFont (lookAndFeel.font (11.0f, false, 0.2f));
+    g.drawText ("V" LOOPROLL_VERSION, juce::Rectangle<float> ((float) editorWidth - 336.0f, 16.0f, 300.0f, 48.0f),
+                juce::Justification::centredRight, false);
 
     // Afficheurs sous les grands potards
     static const char* const names[numColumns] = { "LENGTH", "EVERY", "RATE", "CUTOFF" };

@@ -184,7 +184,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout LoopRollAudioProcessor::crea
 LoopRollAudioProcessor::LoopRollAudioProcessor()
     : AudioProcessor (BusesProperties().withInput ("Input", juce::AudioChannelSet::stereo(), true)
                                        .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
-      apvts (*this, nullptr, "LoopRoll", createParameterLayout())
+      apvts (*this, nullptr, "LoopRoll", createParameterLayout())   // ancien nom du plugin : à garder, les états sauvegardés portent cette étiquette
 {
     loopParam     = apvts.getRawParameterValue (loopId);
     modeParam     = apvts.getRawParameterValue (modeId);

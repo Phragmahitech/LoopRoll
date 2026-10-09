@@ -1,18 +1,21 @@
-LoopRoll - installation
-=======================
+Fragment by Phragma - installation
+==================================
 
 macOS (Apple Silicon et Intel, macOS 10.13 ou plus recent)
 ----------------------------------------------------------
-1. Copie "LoopRoll.vst3" dans :
+1. Copie "Fragment.vst3" dans :
        /Library/Audio/Plug-Ins/VST3/
    (Finder > menu Aller > Aller au dossier... > colle ce chemin)
    Ne garde qu'UNE copie du plugin : s'il en reste une autre dans
    ~/Library/Audio/Plug-Ins/VST3/, le DAW peut charger l'ancienne version.
+   Le plugin s'appelait LoopRoll jusqu'a la v0.4 : si un ancien "LoopRoll.vst3"
+   traine dans un de ces dossiers, supprime-le (c'est le meme plugin, les projets
+   existants rouvrent avec Fragment).
 
 2. Le plugin n'est pas notarise par Apple : macOS le bloque tant que tu n'as pas
    retire le marqueur de telechargement. Ouvre l'app Terminal et lance :
 
-       xattr -dr com.apple.quarantine /Library/Audio/Plug-Ins/VST3/LoopRoll.vst3
+       xattr -dr com.apple.quarantine /Library/Audio/Plug-Ins/VST3/Fragment.vst3
 
 3. Relance ton DAW et rescanne les plugins.
    Ableton Live : Reglages > Plug-Ins > active "Utiliser les dossiers systeme VST3", puis "Rescanner".
@@ -20,8 +23,9 @@ macOS (Apple Silicon et Intel, macOS 10.13 ou plus recent)
 
 Windows (64 bits)
 -----------------
-1. Copie le DOSSIER "LoopRoll.vst3" en entier dans :
+1. Copie le DOSSIER "Fragment.vst3" en entier dans :
        C:\Program Files\Common Files\VST3\
+   S'il y a un ancien dossier "LoopRoll.vst3" au meme endroit, supprime-le.
 
 2. Relance ton DAW et rescanne les plugins.
    Aucune installation supplementaire n'est necessaire.

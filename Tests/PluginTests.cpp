@@ -506,6 +506,10 @@ static void testParametersAndState()
     std::unique_ptr<juce::AudioProcessor> a (createPluginFilter());
     auto& apvts = dynamic_cast<LoopRollAudioProcessor&> (*a).apvts;
 
+    // Le plugin s'appelle Fragment depuis la v1.0 ; l'étiquette de ses états sauvegardés garde l'ancien nom (compatibilité).
+    check (a->getName() == "Fragment", "nom du plugin : " + a->getName());
+    check (apvts.state.getType().toString() == "LoopRoll", "etiquette d'etat : " + apvts.state.getType().toString());
+
     auto* time = apvts.getParameter (LoopRollAudioProcessor::timeId);
     check (time->getText (time->convertTo0to1 (250.0f), 64) == "250 ms", "texte 250 ms : " + time->getText (time->convertTo0to1 (250.0f), 64));
     check (time->getText (time->convertTo0to1 (1500.0f), 64) == "1.50 s", "texte 1.50 s : " + time->getText (time->convertTo0to1 (1500.0f), 64));

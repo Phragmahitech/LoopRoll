@@ -1,6 +1,8 @@
-# LoopRoll
+# Fragment — by Phragma
 
 Effet audio VST3 pour macOS et Windows : looper / beat-repeat, stutter (gate rythmique) et filtre résonant.
+
+Le plugin s'appelait LoopRoll jusqu'à la v0.4. Le dépôt, le projet CMake et les classes gardent ce nom ; seuls le nom affiché, le fichier `.vst3` et le numéro de version (1.0) ont changé. Les identifiants internes sont les mêmes : un projet fait avec LoopRoll se rouvre avec Fragment.
 
 Quatre modules côte à côte, chacun avec son grand potard, son bouton marche / arrêt et ses réglages :
 
@@ -50,7 +52,7 @@ Le dépôt contient un build automatique qui compile le plugin pour macOS (unive
 1. Crée un compte sur github.com, puis un nouveau dépôt (privé si tu veux), **sans** README.
 2. Sur la page du dépôt : *uploading an existing file*, puis glisse **tout le contenu** du dossier `LoopRoll`, y compris le dossier caché `.github` (sur Mac : `Cmd + Shift + .` dans le Finder pour l'afficher). Les fichiers doivent être à la racine du dépôt, pas dans un sous-dossier. Valide avec *Commit changes*.
 3. Onglet **Actions** : le build « Build VST3 » démarre tout seul (10 à 15 minutes).
-4. Ouvre le run terminé : en bas de page, section **Artifacts**, télécharge `LoopRoll-macOS.zip` et `LoopRoll-Windows.zip`.
+4. Ouvre le run terminé : en bas de page, section **Artifacts**, télécharge `Fragment-macOS.zip` et `Fragment-Windows.zip`.
 
 Si le dossier `.github` n'est pas passé à l'upload : onglet Actions → *set up a workflow yourself*, colle le contenu de `.github/workflows/build.yml`, et valide.
 
@@ -60,11 +62,12 @@ Les `.zip` sont publiés avant l'étape de validation : ils restent télécharge
 
 Voir `INSTALLATION.txt` (inclus dans chaque `.zip`). En résumé :
 
-- **macOS** : copier `LoopRoll.vst3` dans `/Library/Audio/Plug-Ins/VST3/`, puis dans Terminal :
-  `xattr -dr com.apple.quarantine /Library/Audio/Plug-Ins/VST3/LoopRoll.vst3`
+- **macOS** : copier `Fragment.vst3` dans `/Library/Audio/Plug-Ins/VST3/`, puis dans Terminal :
+  `xattr -dr com.apple.quarantine /Library/Audio/Plug-Ins/VST3/Fragment.vst3`
   (le plugin n'est pas notarisé par Apple, macOS le bloque sinon).
   Ne garder qu'UNE copie : s'il en reste une autre dans `~/Library/Audio/Plug-Ins/VST3/`, le DAW peut charger l'ancienne.
-- **Windows** : copier le dossier `LoopRoll.vst3` dans `C:\Program Files\Common Files\VST3\`.
+- **Windows** : copier le dossier `Fragment.vst3` dans `C:\Program Files\Common Files\VST3\`.
+- Dans les deux cas, supprimer un éventuel ancien `LoopRoll.vst3` : c'est le même plugin sous son ancien nom.
 
 ## Compiler soi-même
 
@@ -75,7 +78,7 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DLOOPROLL_COPY_AFTER_BUILD=ON
 cmake --build build --config Release --parallel 4
 ```
 
-Le plugin est dans `build/LoopRoll_artefacts/Release/VST3/LoopRoll.vst3` ; avec `LOOPROLL_COPY_AFTER_BUILD=ON` il est aussi copié dans le dossier VST3 du système (sous Windows, lancer le terminal en administrateur ou retirer cette option).
+Le plugin est dans `build/LoopRoll_artefacts/Release/VST3/Fragment.vst3` ; avec `LOOPROLL_COPY_AFTER_BUILD=ON` il est aussi copié dans le dossier VST3 du système (sous Windows, lancer le terminal en administrateur ou retirer cette option).
 
 ## Code
 
@@ -94,12 +97,12 @@ Lancer les tests : ajouter `-DLOOPROLL_BUILD_TESTS=ON` à la configuration, comp
 
 Réglages rapides :
 
-- Nom d'éditeur affiché dans le DAW : `LOOPROLL_COMPANY_NAME` en haut de `CMakeLists.txt`.
+- Nom du plugin et nom d'éditeur affichés dans le DAW : `LOOPROLL_PRODUCT_NAME` et `LOOPROLL_COMPANY_NAME` en haut de `CMakeLists.txt` (le nom dessiné dans l'interface est dans `paintReadouts()`, `PluginEditor.cpp`).
 - Divisions du mode sync : `getDivisionNames()` / `getDivisionInBeats()` pour la boucle et le stutter, `getRefreshDivisionNames()` / `getRefreshDivisionInBeats()` pour le refresh, dans `PluginProcessor.cpp`. Dans chaque paire les deux listes doivent rester alignées, de la plus longue à la plus courte.
 - Plages du mode free : `minTimeMs` / `maxTimeMs`, `minRefreshMs` / `maxRefreshMs` et `minStutterMs` / `maxStutterMs` dans `PluginProcessor.h`.
 - Résonance maximale du filtre : `qualityFor()` dans `OutputFilter.h` (Q de 0,7 à 10).
 
-Ne pas changer `PLUGIN_CODE`, `PLUGIN_MANUFACTURER_CODE` ni les identifiants de paramètres une fois le plugin utilisé dans des projets : les DAW ne retrouveraient plus le plugin ou ses automations.
+Ne pas changer `PLUGIN_CODE`, `PLUGIN_MANUFACTURER_CODE`, l'étiquette d'état `"LoopRoll"` (`PluginProcessor.cpp`) ni les identifiants de paramètres une fois le plugin utilisé dans des projets : les DAW ne retrouveraient plus le plugin ou ses automations.
 
 ## Licence de JUCE
 
