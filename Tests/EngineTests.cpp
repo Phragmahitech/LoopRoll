@@ -2,6 +2,8 @@
 //   g++ -std=c++17 -O1 -g -fsanitize=address,undefined -I Source Tests/EngineTests.cpp -o engine_tests && ./engine_tests
 
 #include "LooperEngine.h"
+#include "OutputFilter.h"
+#include "StutterGate.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -561,9 +563,243 @@ static void testFades()
     }
 }
 
+// Fait passer un signal mono dans le gate, par blocs ; "onBlock" est appelé avant chaque bloc.
+template <typename Processor, typename Callback>
+static std::vector<float> runMono (Processor& processor, const std::vector<float>& in, int blockSize, Callback onBlock)
+{
+    std::vector<float> out = in;
+
+    for (int start = 0; start < (int) in.size(); start += blockSize)
+    {
+        onBlock (start);
+        float* channel[1] = { out.data() + start };
+        processor.process (channel, 1, std::min (blockSize, (int) in.size() - start));
+    }
+
+    return out;
+}
+
+static void testStutter()
+{
+    std::printf ("10. Stutter : gate en dent de scie, forme reglable, sans clic\n");
+
+    const int step = 2000, N = 60000, ON = 8192;
+    const std::vector<float> ones ((size_t) N, 1.0f);   // entrée constante : la sortie EST le gain du gate
+
+    // Éteint : intact.
+    {
+        StutterGate gate;
+        gate.prepare (kSampleRate);
+        gate.setStepLength ((double) step);
+        const auto in = makeNoise (N, 20);
+        const auto out = runMono (gate, in, 256, [] (int) {});
+        bool same = true;
+        for (size_t i = 0; i < in.size(); ++i) same = same && in[i] == out[i];
+        CHECK (same, "gate eteint : la sortie devrait etre l'entree");
+    }
+
+    // Forme du pas selon le réglage.
+    struct ShapeCase { double shape; float atTenth, atHalf, atNinety; const char* name; };
+
+    for (const auto& c : { ShapeCase { 0.5, 0.90f, 0.50f, 0.10f, "lineaire" },
+                           ShapeCase { 0.0, 0.99f, 0.96f, 0.87f, "quasi carre" },
+                           ShapeCase { 1.0, 0.19f, 0.00f, 0.00f, "tres ferme" } })
+    {
+        StutterGate gate;
+        gate.prepare (kSampleRate);
+        gate.setStepLength ((double) step);
+        gate.setShape (c.shape);
+        const auto out = runMono (gate, ones, 256, [&] (int start) { gate.setActive (start >= ON); });
+
+        const int s0 = ON + 5 * step;   // début d'un pas, bien après la rampe d'entrée
+        CHECK (out[(size_t) s0] < 0.05f, "%s : le pas devrait s'ouvrir depuis zero (%.3f)", c.name, out[(size_t) s0]);
+        CHECK (std::abs (out[(size_t) (s0 + step / 10)] - c.atTenth) < 0.03f, "%s : niveau a 10 %% = %.3f", c.name, out[(size_t) (s0 + step / 10)]);
+        CHECK (std::abs (out[(size_t) (s0 + step / 2)] - c.atHalf) < 0.03f, "%s : niveau a 50 %% = %.3f", c.name, out[(size_t) (s0 + step / 2)]);
+        CHECK (std::abs (out[(size_t) (s0 + step * 9 / 10)] - c.atNinety) < 0.03f, "%s : niveau a 90 %% = %.3f", c.name, out[(size_t) (s0 + step * 9 / 10)]);
+        CHECK (out[(size_t) (s0 + step - 1)] < 0.05f, "%s : le pas devrait finir a zero (%.3f)", c.name, out[(size_t) (s0 + step - 1)]);
+
+        float peak = 0.0f;
+        bool periodic = true;
+        for (int t = s0; t < s0 + 4 * step; ++t)
+        {
+            peak = std::max (peak, out[(size_t) t]);
+            periodic = periodic && std::abs (out[(size_t) t] - out[(size_t) (t + step)]) < 1.0e-3f;
+        }
+        CHECK (peak <= 1.0f, "%s : le gate ne doit jamais amplifier", c.name);
+        CHECK (periodic, "%s : le motif devrait se repeter a chaque pas", c.name);
+    }
+
+    // Calage sur la grille de l'hôte : le pas démarre là où on le lui dit.
+    {
+        StutterGate gate;
+        gate.prepare (kSampleRate);
+        gate.setStepLength ((double) step);
+        gate.setShape (0.5);
+        gate.setActive (true);
+
+        const int block = 500;
+        const double offset = 0.25;   // au début du rendu, on est à 25 % d'un pas
+        const auto out = runMono (gate, ones, block, [&] (int start) { gate.syncPhase (offset + (double) start / step); });
+
+        const int boundary = (int) ((1.0 - offset) * step) + 6 * step;   // un début de pas sur la grille
+        CHECK (out[(size_t) boundary] < 0.05f && out[(size_t) (boundary + step / 10)] > 0.8f,
+               "le pas ne tombe pas sur la grille demandee (%.3f, %.3f)", out[(size_t) boundary], out[(size_t) (boundary + step / 10)]);
+        CHECK (out[(size_t) (boundary - step / 10)] < 0.2f, "fin de pas mal placee (%.3f)", out[(size_t) (boundary - step / 10)]);
+    }
+
+    // Pas de clic, et retour exact au direct.
+    for (double shape : { 0.0, 0.5, 1.0 })
+    {
+        StutterGate gate;
+        gate.prepare (kSampleRate);
+        gate.setStepLength (3801.72);   // 1/16 à 174 BPM
+        const auto sine = makeSine (N, 55.0, 0.8f);
+        const auto out = runMono (gate, sine, 256, [&] (int start)
+        {
+            gate.setActive (start >= ON && start < 40000);
+            gate.setShape (start < 24000 ? shape : 1.0 - shape);   // forme changée en cours de route
+        });
+
+        const float worst = maxStep (out, 0, N);
+        CHECK (worst < 0.03f, "clic du gate (forme %.1f) : %.4f", shape, worst);
+
+        bool dry = true;
+        for (int t = 41000; t < N; ++t) dry = dry && out[(size_t) t] == sine[(size_t) t];
+        CHECK (dry, "le gate ne rend pas le signal intact une fois eteint");
+    }
+
+    // Fuzz
+    {
+        std::mt19937 rng (77);
+        std::uniform_real_distribution<double> u (0.0, 1.0);
+        StutterGate gate;
+        gate.prepare (48000.0);
+        const auto in = makeNoise (400000, 21);
+        const auto out = runMono (gate, in, 97, [&] (int)
+        {
+            if (u (rng) < 0.1) gate.setActive (u (rng) < 0.6);
+            if (u (rng) < 0.3) gate.setStepLength (std::pow (10.0, u (rng) * 6.0));
+            if (u (rng) < 0.3) gate.setShape (u (rng) * 1.4 - 0.2);
+            if (u (rng) < 0.2) gate.syncPhase (u (rng) * 50.0 - 25.0);
+        });
+
+        bool ok = true;
+        for (size_t i = 0; i < in.size(); ++i) ok = ok && std::isfinite (out[i]) && std::abs (out[i]) <= std::abs (in[i]) + 1.0e-6f;
+        CHECK (ok, "fuzz du gate : sortie invalide ou amplifiee");
+    }
+}
+
+// Gain mesuré du filtre sur une sinusoïde (régime établi).
+static double filterGain (double frequency, double cutoff, double resonance, bool bandPass)
+{
+    OutputFilter filter;
+    filter.prepare (kSampleRate);
+    filter.setFrequency (cutoff);
+    filter.setResonance (resonance);
+    filter.setBandPass (bandPass);
+    filter.reset();
+    filter.setActive (true);
+
+    const int N = 40000;
+    const auto in = makeSine (N, frequency, 0.5f);
+    const auto out = runMono (filter, in, 256, [] (int) {});
+
+    double sumIn = 0.0, sumOut = 0.0;
+    for (int i = N / 2; i < N; ++i) { sumIn += (double) in[(size_t) i] * in[(size_t) i]; sumOut += (double) out[(size_t) i] * out[(size_t) i]; }
+    return std::sqrt (sumOut / sumIn);
+}
+
+static void testFilter()
+{
+    std::printf ("11. Filtre : passe-haut, passe-bande, resonance, stabilite\n");
+
+    // Éteint : intact.
+    {
+        OutputFilter filter;
+        filter.prepare (kSampleRate);
+        filter.setFrequency (2000.0);
+        const auto in = makeNoise (30000, 30);
+        const auto out = runMono (filter, in, 256, [] (int) {});
+        bool same = true;
+        for (size_t i = 0; i < in.size(); ++i) same = same && in[i] == out[i];
+        CHECK (same, "filtre eteint : la sortie devrait etre l'entree");
+    }
+
+    // Passe-haut à 1 kHz, sans résonance.
+    {
+        const double low = filterGain (100.0, 1000.0, 0.0, false);
+        const double high = filterGain (8000.0, 1000.0, 0.0, false);
+        std::printf ("   passe-haut 1 kHz : 100 Hz -> %.1f dB, 8 kHz -> %.1f dB\n", 20.0 * std::log10 (low), 20.0 * std::log10 (high));
+        CHECK (low < 0.02, "le passe-haut ne coupe pas assez les graves (%.4f)", low);
+        CHECK (high > 0.9 && high < 1.1, "le passe-haut touche les aigus (%.4f)", high);
+        CHECK (filterGain (40.0, 20.0, 0.0, false) > 0.9, "a 20 Hz le passe-haut devrait etre transparent");
+    }
+
+    // Passe-bande à 1 kHz : pic au centre, coupe de part et d'autre ; la résonance resserre et accentue.
+    {
+        const double centre = filterGain (1000.0, 1000.0, 0.5, true);
+        const double below = filterGain (100.0, 1000.0, 0.5, true);
+        const double above = filterGain (10000.0, 1000.0, 0.5, true);
+        const double expected = std::sqrt (OutputFilter::qualityFor (0.5));
+        std::printf ("   passe-bande 1 kHz : centre %.2f (attendu %.2f), 100 Hz %.3f, 10 kHz %.3f\n", centre, expected, below, above);
+        CHECK (std::abs (centre - expected) < 0.15 * expected, "pic du passe-bande : %.3f", centre);
+        CHECK (below < 0.2 && above < 0.2, "le passe-bande ne coupe pas assez (%.3f, %.3f)", below, above);
+        CHECK (filterGain (1000.0, 1000.0, 1.0, true) > filterGain (1000.0, 1000.0, 0.0, true), "la resonance devrait accentuer le pic");
+        CHECK (filterGain (1000.0, 1000.0, 0.8, false) > 2.0, "passe-haut : la resonance devrait creer un pic a la coupure");
+    }
+
+    // La courbe dessinée dans l'interface correspond au filtre réel.
+    for (const bool bandPass : { false, true })
+        for (const double f : { 200.0, 700.0, 1000.0, 1800.0 })
+        {
+            const double q = OutputFilter::qualityFor (0.4);
+            const double measured = filterGain (f, 1000.0, 0.4, bandPass);
+            const double drawn = OutputFilter::magnitudeAt (f, 1000.0, q, bandPass);
+            CHECK (std::abs (measured - drawn) < 0.12 * std::max (drawn, 0.05), "courbe %s a %.0f Hz : mesure %.3f, dessine %.3f",
+                   bandPass ? "passe-bande" : "passe-haut", f, measured, drawn);
+        }
+
+    // Allumage / extinction sans clic (réglage neutre) et balayages rapides : stable.
+    {
+        OutputFilter filter;
+        filter.prepare (kSampleRate);
+        filter.setFrequency (20.0);
+        const int N = 60000;
+        const auto sine = makeSine (N, 220.0, 0.8f);
+        const auto out = runMono (filter, sine, 256, [&] (int start) { filter.setActive (start >= 8192 && start < 40000); filter.setBandPass (false); });
+        CHECK (maxStep (out, 0, N) < 0.04f, "clic a l'allumage du filtre : %.4f", maxStep (out, 0, N));
+
+        bool dry = true;
+        for (int t = 41000; t < N; ++t) dry = dry && out[(size_t) t] == sine[(size_t) t];
+        CHECK (dry, "le filtre ne rend pas le signal intact une fois eteint");
+    }
+
+    for (double sr : { 22050.0, 44100.0, 96000.0, 192000.0 })
+    {
+        std::mt19937 rng (5);
+        std::uniform_real_distribution<double> u (0.0, 1.0);
+        OutputFilter filter;
+        filter.prepare (sr);
+        filter.setActive (true);
+        const auto in = makeNoise (300000, 31);
+        const auto out = runMono (filter, in, 64, [&] (int)
+        {
+            if (u (rng) < 0.5) filter.setFrequency (std::pow (10.0, u (rng) * 5.0));   // 1 Hz à 100 kHz : hors plage exprès
+            if (u (rng) < 0.3) filter.setResonance (u (rng) * 1.4 - 0.2);
+            if (u (rng) < 0.1) filter.setBandPass (u (rng) < 0.5);
+            if (u (rng) < 0.05) filter.setActive (u (rng) < 0.7);
+        });
+
+        bool ok = true;
+        float peak = 0.0f;
+        for (float x : out) { ok = ok && std::isfinite (x); peak = std::max (peak, std::abs (x)); }
+        CHECK (ok && peak < 40.0f, "filtre instable a %.0f Hz (pic %.1f)", sr, peak);
+    }
+}
+
 static void testFuzz()
 {
-    std::printf ("10. Fuzz : blocs, durees, modes et activations aleatoires (stereo, plusieurs frequences d'echantillonnage)\n");
+    std::printf ("12. Fuzz : blocs, durees, modes et activations aleatoires (stereo, plusieurs frequences d'echantillonnage)\n");
     std::mt19937 rng (1234);
 
     for (double sr : { 22050.0, 44100.0, 48000.0, 96000.0, 192000.0 })
@@ -611,6 +847,8 @@ int main()
     testRetriggerAndCapacity();
     testRefresh();
     testFades();
+    testStutter();
+    testFilter();
     testFuzz();
 
     std::printf (failures == 0 ? "\nTOUS LES TESTS PASSENT\n" : "\n%d ECHEC(S)\n", failures);

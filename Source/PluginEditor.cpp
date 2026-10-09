@@ -10,20 +10,20 @@ namespace
     using LF = LoopRollLookAndFeel;
     using Pt = juce::Point<float>;
 
-    constexpr int editorWidth = 760, editorHeight = 480;
+    // Façade : quatre modules côte à côte (LOOP, REFRESH, STUTTER, FILTER), tous bâtis sur la même grille.
+    constexpr int editorWidth = 1104, editorHeight = 568;
+    constexpr int numColumns = 4, columnWidth = 250, columnGap = 16, firstColumnX = 28;
 
-    // Zones de la façade, en pixels
-    const juce::Rectangle<int> lengthKnobArea    { 85, 98, 190, 190 };
-    const juce::Rectangle<int> refreshKnobArea   { 485, 98, 190, 190 };
-    const juce::Rectangle<int> lengthReadout     { 78, 296, 204, 36 };
-    const juce::Rectangle<int> refreshReadout    { 478, 296, 204, 36 };
-    const juce::Rectangle<int> freeButtonArea    { 342, 116, 76, 44 };
-    const juce::Rectangle<int> syncButtonArea    { 342, 168, 76, 44 };
-    const juce::Rectangle<int> envelopeArea      { 342, 224, 76, 30 };
-    const juce::Rectangle<int> fadeInKnobArea    { 338, 260, 40, 40 };
-    const juce::Rectangle<int> fadeOutKnobArea   { 382, 260, 40, 40 };
-    const juce::Rectangle<int> loopButtonArea    { 34, 362, 292, 60 };
-    const juce::Rectangle<int> refreshButtonArea { 434, 362, 292, 60 };
+    constexpr int columnX (int column)                  { return firstColumnX + column * (columnWidth + columnGap); }
+
+    juce::Rectangle<int> bayArea (int column)           { return { columnX (column), 84, columnWidth, 268 }; }
+    juce::Rectangle<int> knobArea (int column)          { return { columnX (column) + 40, 98, 170, 170 }; }
+    juce::Rectangle<int> readoutArea (int column)       { return { columnX (column) + 20, 276, 210, 34 }; }
+    juce::Rectangle<int> switchArea (int column)        { return { columnX (column) + 50, 318, 150, 24 }; }
+    juce::Rectangle<int> buttonArea (int column)        { return { columnX (column), 364, columnWidth, 52 }; }
+    juce::Rectangle<int> moduleArea (int column)        { return { columnX (column), 430, columnWidth, 92 }; }
+    juce::Rectangle<int> displayArea (int column, int width)   { return { columnX (column) + 14, 458, width, 44 }; }
+    juce::Rectangle<int> miniKnobArea (int column, int slot)   { return { columnX (column) + (slot == 0 ? 112 : 176), 452, 40, 40 }; }
 
     juce::Path polyline (std::initializer_list<Pt> points, bool closed = false)
     {
@@ -44,17 +44,6 @@ namespace
             path.closeSubPath();
 
         return path;
-    }
-
-    float mirrorX (float x)                         { return (float) editorWidth - x; }
-    Pt mirror (Pt point)                            { return { mirrorX (point.x), point.y }; }
-
-    /** Symétrie gauche / droite de la façade. */
-    juce::Path mirrored (const juce::Path& path)
-    {
-        auto copy = path;
-        copy.applyTransform (juce::AffineTransform::scale (-1.0f, 1.0f).translated ((float) editorWidth, 0.0f));
-        return copy;
     }
 
     /** "4.00 s" -> "4 s", "10.0 ms" -> "10 ms" : pour les repères de début et de fin des potards. */
@@ -342,8 +331,9 @@ void LoopRollLookAndFeel::drawButtonText (juce::Graphics& g, juce::TextButton& b
 {
     const bool on = button.getToggleState();
     const bool big = button.getProperties().contains ("big");
+    const bool small = button.getProperties().contains ("small");
     const auto text = button.getButtonText();
-    const auto textFont = font (big ? 18.0f : 13.0f, true, big ? 0.2f : 0.14f);
+    const auto textFont = font (big ? 18.0f : small ? 10.5f : 13.0f, true, big ? 0.2f : small ? 0.12f : 0.14f);
     const auto textColour = on ? juce::Colours::white : juce::Colour (0xff2a3342);
     const auto area = button.getLocalBounds().toFloat();
 
@@ -375,76 +365,69 @@ void LoopRollLookAndFeel::drawButtonText (juce::Graphics& g, juce::TextButton& b
     g.drawText (text, juce::Rectangle<float> (left + iconWidth + gap, area.getY(), labelWidth + 12.0f, area.getHeight()),
                 juce::Justification::centredLeft, false);
 }
-
 //==============================================================================
 LoopRollAudioProcessorEditor::LoopRollAudioProcessorEditor (LoopRollAudioProcessor& p)
     : AudioProcessorEditor (&p), audioProcessor (p)
 {
     setLookAndFeel (&lookAndFeel);
-    auto& apvts = audioProcessor.apvts;
 
-    configureMainKnob (timeKnob, LoopRollAudioProcessor::timeId);
-    configureMainKnob (divisionKnob, LoopRollAudioProcessor::divisionId);
-    configureMainKnob (refreshTimeKnob, LoopRollAudioProcessor::refreshTimeId);
-    configureMainKnob (refreshDivisionKnob, LoopRollAudioProcessor::refreshDivisionId);
-    configureMiniKnob (fadeInKnob, LoopRollAudioProcessor::fadeInId);
-    configureMiniKnob (fadeOutKnob, LoopRollAudioProcessor::fadeOutId);
+    using Ids = LoopRollAudioProcessor;
 
-    configureValueLabel (lengthValue, false);
-    configureValueLabel (refreshValue, true);
+    // Grands potards : un par module, deux sliders superposés quand le module a un mode FREE / SYNC.
+    configureMainKnob (timeKnob, Ids::timeId, 0);
+    configureMainKnob (divisionKnob, Ids::divisionId, 0);
+    configureMainKnob (refreshTimeKnob, Ids::refreshTimeId, 1);
+    configureMainKnob (refreshDivisionKnob, Ids::refreshDivisionId, 1);
+    configureMainKnob (stutterTimeKnob, Ids::stutterTimeId, 2);
+    configureMainKnob (stutterDivisionKnob, Ids::stutterDivisionId, 2);
+    configureMainKnob (cutoffKnob, Ids::filterCutoffId, 3);
+    cutoffKnob.setVisible (true);
 
-    timeAttachment            = std::make_unique<APVTS::SliderAttachment> (apvts, LoopRollAudioProcessor::timeId, timeKnob);
-    divisionAttachment        = std::make_unique<APVTS::SliderAttachment> (apvts, LoopRollAudioProcessor::divisionId, divisionKnob);
-    refreshTimeAttachment     = std::make_unique<APVTS::SliderAttachment> (apvts, LoopRollAudioProcessor::refreshTimeId, refreshTimeKnob);
-    refreshDivisionAttachment = std::make_unique<APVTS::SliderAttachment> (apvts, LoopRollAudioProcessor::refreshDivisionId, refreshDivisionKnob);
-    fadeInAttachment          = std::make_unique<APVTS::SliderAttachment> (apvts, LoopRollAudioProcessor::fadeInId, fadeInKnob);
-    fadeOutAttachment         = std::make_unique<APVTS::SliderAttachment> (apvts, LoopRollAudioProcessor::fadeOutId, fadeOutKnob);
+    configureMiniKnob (fadeInKnob, Ids::fadeInId, miniKnobArea (0, 0));
+    configureMiniKnob (fadeOutKnob, Ids::fadeOutId, miniKnobArea (0, 1));
+    configureMiniKnob (shapeKnob, Ids::stutterShapeId, miniKnobArea (2, 1));
+    configureMiniKnob (resonanceKnob, Ids::filterResonanceId, miniKnobArea (3, 1));
 
-    for (auto* knob : { &timeKnob, &divisionKnob, &refreshTimeKnob, &refreshDivisionKnob })
-        knob->onValueChange = [this] { updateValueLabels(); };
+    for (int column = 0; column < numColumns; ++column)
+        configureValueLabel (valueLabels[column], column);
 
-    for (auto* knob : { &fadeInKnob, &fadeOutKnob })
-        knob->onValueChange = [this] { repaint(); };   // dessin de l'enveloppe et valeurs en %
+    // Grands boutons à bascule. Les lumières de chaque module suivent son état.
+    configureToggle (loopButton, Ids::loopId, 0, [this] (bool on) { loopOn = on; });
+    configureToggle (refreshButton, Ids::refreshId, 1, [this] (bool on)
+    {
+        refreshOn = on;
+        setStandby (1, ! on);
+    });
+    configureToggle (stutterButton, Ids::stutterId, 2, [this] (bool on)
+    {
+        stutterOn = on;
+        setStandby (2, ! on);
+    });
+    configureToggle (filterButton, Ids::filterId, 3, [this] (bool on)
+    {
+        filterOn = on;
+        setStandby (3, ! on);
+    });
 
-    // Sélecteur FREE | SYNC
-    configureButton (freeButton, false, false);
-    configureButton (syncButton, false, false);
+    // Interrupteurs à deux positions
+    configureSwitch (loopMode, Ids::modeId, "FREE", "SYNC", switchArea (0), [this] (bool sync) { loopSync = sync; modesChanged(); });
+    configureSwitch (refreshMode, Ids::refreshModeId, "FREE", "SYNC", switchArea (1), [this] (bool sync) { refreshSync = sync; modesChanged(); });
+    configureSwitch (stutterMode, Ids::stutterModeId, "FREE", "SYNC", switchArea (2), [this] (bool sync) { stutterSync = sync; modesChanged(); });
+    configureSwitch (filterType, Ids::filterTypeId, "HP", "BP", switchArea (3), [this] (bool isBandPass) { bandPass = isBandPass; repaint(); });
+    configureSwitch (chainOrder, Ids::orderId, "STUTTER > LOOP", "LOOP > STUTTER", {}, [] (bool) {});
 
-    modeAttachment = std::make_unique<juce::ParameterAttachment> (*apvts.getParameter (LoopRollAudioProcessor::modeId),
-                                                                  [this] (float value) { modeChanged (value > 0.5f); });
-    freeButton.onClick = [this] { modeAttachment->setValueAsCompleteGesture (0.0f); };
-    syncButton.onClick = [this] { modeAttachment->setValueAsCompleteGesture (1.0f); };
+    const auto chain = moduleArea (1);
+    chainOrder.first.setBounds (chain.getX() + 14, chain.getY() + 26, chain.getWidth() - 28, 26);
+    chainOrder.second.setBounds (chain.getX() + 14, chain.getY() + 56, chain.getWidth() - 28, 26);
+    chainOrder.first.setConnectedEdges (0);
+    chainOrder.second.setConnectedEdges (0);
 
-    // LOOP et REFRESH : boutons à bascule
-    configureButton (loopButton, true, true);
-    configureButton (refreshButton, true, true);
-    loopAttachment    = std::make_unique<APVTS::ButtonAttachment> (apvts, LoopRollAudioProcessor::loopId, loopButton);
-    refreshAttachment = std::make_unique<APVTS::ButtonAttachment> (apvts, LoopRollAudioProcessor::refreshId, refreshButton);
+    // Tout est en place : on aligne l'interface sur les paramètres.
+    for (auto& watcher : stateWatchers)
+        watcher->sendInitialUpdate();
 
-    // Les lumières de la façade suivent l'état de LOOP (baie gauche) et de REFRESH (baie droite).
-    loopStateAttachment = std::make_unique<juce::ParameterAttachment> (*apvts.getParameter (LoopRollAudioProcessor::loopId),
-                                                                       [this] (float value)
-                                                                       {
-                                                                           loopOn = value > 0.5f;
-                                                                           repaint();
-                                                                       });
-
-    refreshStateAttachment = std::make_unique<juce::ParameterAttachment> (*apvts.getParameter (LoopRollAudioProcessor::refreshId),
-                                                                          [this] (float value)
-                                                                          {
-                                                                              refreshOn = value > 0.5f;
-
-                                                                              // Refresh éteint : son potard passe en veille (il reste réglable).
-                                                                              for (auto* knob : { &refreshTimeKnob, &refreshDivisionKnob })
-                                                                                  knob->getProperties().set ("standby", ! refreshOn);
-
-                                                                              refreshValue.setColour (juce::Label::textColourId, refreshOn ? LF::ink() : LF::dimInk());
-                                                                              repaint();
-                                                                          });
-
-    modeAttachment->sendInitialUpdate();
-    loopStateAttachment->sendInitialUpdate();
-    refreshStateAttachment->sendInitialUpdate();
+    for (auto* selector : { &loopMode, &refreshMode, &stutterMode, &filterType, &chainOrder })
+        selector->attachment->sendInitialUpdate();
 
     setSize (editorWidth, editorHeight);
 }
@@ -454,7 +437,7 @@ LoopRollAudioProcessorEditor::~LoopRollAudioProcessorEditor()
     setLookAndFeel (nullptr);
 }
 
-void LoopRollAudioProcessorEditor::configureMainKnob (juce::Slider& knob, const char* parameterId)
+void LoopRollAudioProcessorEditor::configureMainKnob (juce::Slider& knob, const char* parameterId, int column)
 {
     addChildComponent (knob);
     knob.setComponentID (parameterId);
@@ -462,9 +445,13 @@ void LoopRollAudioProcessorEditor::configureMainKnob (juce::Slider& knob, const 
     knob.setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
     knob.setRotaryParameters (juce::MathConstants<float>::pi * 1.25f, juce::MathConstants<float>::pi * 2.75f, true);
     knob.setWantsKeyboardFocus (false);
+    knob.setBounds (knobArea (column));
+    knob.onValueChange = [this] { updateValueLabels(); repaint(); };
+
+    sliderAttachments.push_back (std::make_unique<APVTS::SliderAttachment> (audioProcessor.apvts, parameterId, knob));
 }
 
-void LoopRollAudioProcessorEditor::configureMiniKnob (juce::Slider& knob, const char* parameterId)
+void LoopRollAudioProcessorEditor::configureMiniKnob (juce::Slider& knob, const char* parameterId, juce::Rectangle<int> area)
 {
     addAndMakeVisible (knob);
     knob.setComponentID (parameterId);
@@ -473,47 +460,125 @@ void LoopRollAudioProcessorEditor::configureMiniKnob (juce::Slider& knob, const 
     knob.setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
     knob.setRotaryParameters (juce::MathConstants<float>::pi * 1.25f, juce::MathConstants<float>::pi * 2.75f, true);
     knob.setWantsKeyboardFocus (false);
+    knob.setBounds (area);
+    knob.onValueChange = [this] { repaint(); };   // afficheurs et valeurs en %
+
+    sliderAttachments.push_back (std::make_unique<APVTS::SliderAttachment> (audioProcessor.apvts, parameterId, knob));
 }
 
-void LoopRollAudioProcessorEditor::configureValueLabel (juce::Label& label, bool isRefresh)
+void LoopRollAudioProcessorEditor::configureValueLabel (juce::Label& label, int column)
 {
     addAndMakeVisible (label);
     label.setJustificationType (juce::Justification::centredRight);
-    label.setMinimumHorizontalScale (0.8f);
+    label.setMinimumHorizontalScale (0.7f);
+    label.setBounds (readoutArea (column).withTrimmedLeft (78).withTrimmedRight (9));
 
-    // Saisie au clavier (mode FREE) : la valeur tapée est appliquée au potard affiché.
-    label.onTextChange = [this, &label, isRefresh]
+    // Saisie au clavier : la valeur tapée est appliquée au potard affiché dans ce module.
+    label.onTextChange = [this, &label, column]
     {
-        applyTypedValue (label, isRefresh ? activeRefreshKnob() : activeLengthKnob());
+        auto& knob = activeKnob (column);
+        knob.setValue (knob.getValueFromText (label.getText()), juce::sendNotificationSync);
+        updateValueLabels();
     };
 }
 
-void LoopRollAudioProcessorEditor::configureButton (juce::TextButton& button, bool togglesOnClick, bool big)
+void LoopRollAudioProcessorEditor::configureToggle (juce::TextButton& button, const char* parameterId, int column,
+                                                    std::function<void (bool)> onChange)
 {
     addAndMakeVisible (button);
-    button.setClickingTogglesState (togglesOnClick);
+    button.setClickingTogglesState (true);
     button.setWantsKeyboardFocus (false);
-    button.getProperties().set ("cut", big ? 16.0 : 8.0);
+    button.getProperties().set ("cut", 16.0);
+    button.getProperties().set ("big", true);
+    button.setBounds (buttonArea (column));
 
-    if (big)
-        button.getProperties().set ("big", true);
+    buttonAttachments.push_back (std::make_unique<APVTS::ButtonAttachment> (audioProcessor.apvts, parameterId, button));
+
+    stateWatchers.push_back (std::make_unique<juce::ParameterAttachment> (*audioProcessor.apvts.getParameter (parameterId),
+                                                                          [this, onChange] (float value)
+                                                                          {
+                                                                              onChange (value > 0.5f);
+                                                                              repaint();
+                                                                          }));
 }
 
-void LoopRollAudioProcessorEditor::modeChanged (bool sync)
+void LoopRollAudioProcessorEditor::configureSwitch (TwoWaySwitch& selector, const char* parameterId,
+                                                    const juce::String& firstText, const juce::String& secondText,
+                                                    juce::Rectangle<int> area, std::function<void (bool)> onChange)
 {
-    syncMode = sync;
+    selector.first.setButtonText (firstText);
+    selector.second.setButtonText (secondText);
 
-    freeButton.setToggleState (! sync, juce::dontSendNotification);
-    syncButton.setToggleState (sync, juce::dontSendNotification);
+    // Identifiants "paramètre/0" et "paramètre/1" : pour retrouver les deux positions (tests, accessibilité).
+    selector.first.setComponentID (juce::String (parameterId) + "/0");
+    selector.second.setComponentID (juce::String (parameterId) + "/1");
 
-    timeKnob.setVisible (! sync);
-    divisionKnob.setVisible (sync);
-    refreshTimeKnob.setVisible (! sync);
-    refreshDivisionKnob.setVisible (sync);
+    for (auto* button : { &selector.first, &selector.second })
+    {
+        addAndMakeVisible (*button);
+        button->setClickingTogglesState (false);
+        button->setWantsKeyboardFocus (false);
+        button->getProperties().set ("cut", 6.0);
+        button->getProperties().set ("small", true);
+    }
 
-    // Les durées libres se tapent au clavier ; les divisions se choisissent au potard.
-    lengthValue.setEditable (! sync, false, false);
-    refreshValue.setEditable (! sync, false, false);
+    selector.first.setConnectedEdges (juce::Button::ConnectedOnRight);
+    selector.second.setConnectedEdges (juce::Button::ConnectedOnLeft);
+    selector.first.setBounds (area.withWidth (area.getWidth() / 2));
+    selector.second.setBounds (area.withTrimmedLeft (area.getWidth() / 2));
+
+    auto* first = &selector.first;
+    auto* second = &selector.second;
+
+    selector.attachment = std::make_unique<juce::ParameterAttachment> (*audioProcessor.apvts.getParameter (parameterId),
+                                                                       [first, second, onChange] (float value)
+                                                                       {
+                                                                           const bool secondChosen = value > 0.5f;
+                                                                           first->setToggleState (! secondChosen, juce::dontSendNotification);
+                                                                           second->setToggleState (secondChosen, juce::dontSendNotification);
+                                                                           onChange (secondChosen);
+                                                                       });
+
+    auto* attachment = selector.attachment.get();
+    selector.first.onClick = [attachment] { attachment->setValueAsCompleteGesture (0.0f); };
+    selector.second.onClick = [attachment] { attachment->setValueAsCompleteGesture (1.0f); };
+}
+
+juce::Slider& LoopRollAudioProcessorEditor::activeKnob (int column)
+{
+    switch (column)
+    {
+        case 0:   return loopSync ? divisionKnob : timeKnob;
+        case 1:   return refreshSync ? refreshDivisionKnob : refreshTimeKnob;
+        case 2:   return stutterSync ? stutterDivisionKnob : stutterTimeKnob;
+        default:  return cutoffKnob;
+    }
+}
+
+void LoopRollAudioProcessorEditor::setStandby (int column, bool standby)
+{
+    // Module éteint : son potard passe en veille (il reste réglable) et sa valeur s'estompe.
+    for (auto* knob : { &refreshTimeKnob, &refreshDivisionKnob, &stutterTimeKnob, &stutterDivisionKnob, &cutoffKnob })
+        if (knob->getBounds() == knobArea (column))
+            knob->getProperties().set ("standby", standby);
+
+    valueLabels[column].setColour (juce::Label::textColourId, standby ? LF::dimInk() : LF::ink());
+}
+
+void LoopRollAudioProcessorEditor::modesChanged()
+{
+    timeKnob.setVisible (! loopSync);
+    divisionKnob.setVisible (loopSync);
+    refreshTimeKnob.setVisible (! refreshSync);
+    refreshDivisionKnob.setVisible (refreshSync);
+    stutterTimeKnob.setVisible (! stutterSync);
+    stutterDivisionKnob.setVisible (stutterSync);
+
+    // Les durées libres et la fréquence se tapent au clavier ; les divisions se choisissent au potard.
+    valueLabels[0].setEditable (! loopSync, false, false);
+    valueLabels[1].setEditable (! refreshSync, false, false);
+    valueLabels[2].setEditable (! stutterSync, false, false);
+    valueLabels[3].setEditable (true, false, false);
 
     updateValueLabels();
     repaint();
@@ -521,44 +586,21 @@ void LoopRollAudioProcessorEditor::modeChanged (bool sync)
 
 void LoopRollAudioProcessorEditor::updateValueLabels()
 {
-    auto& length = activeLengthKnob();
-    auto& refresh = activeRefreshKnob();
-
-    lengthValue.setText (length.getTextFromValue (length.getValue()), juce::dontSendNotification);
-    refreshValue.setText (refresh.getTextFromValue (refresh.getValue()), juce::dontSendNotification);
+    for (int column = 0; column < numColumns; ++column)
+    {
+        auto& knob = activeKnob (column);
+        valueLabels[column].setText (knob.getTextFromValue (knob.getValue()), juce::dontSendNotification);
+    }
 }
 
-void LoopRollAudioProcessorEditor::applyTypedValue (juce::Label& label, juce::Slider& knob)
-{
-    knob.setValue (knob.getValueFromText (label.getText()), juce::sendNotificationSync);
-    updateValueLabels();
-}
-
-void LoopRollAudioProcessorEditor::resized()
-{
-    timeKnob.setBounds (lengthKnobArea);
-    divisionKnob.setBounds (lengthKnobArea);
-    refreshTimeKnob.setBounds (refreshKnobArea);
-    refreshDivisionKnob.setBounds (refreshKnobArea);
-
-    lengthValue.setBounds (lengthReadout.withTrimmedLeft (98).withTrimmedRight (9));
-    refreshValue.setBounds (refreshReadout.withTrimmedLeft (98).withTrimmedRight (9));
-
-    freeButton.setBounds (freeButtonArea);
-    syncButton.setBounds (syncButtonArea);
-    fadeInKnob.setBounds (fadeInKnobArea);
-    fadeOutKnob.setBounds (fadeOutKnobArea);
-
-    loopButton.setBounds (loopButtonArea);
-    refreshButton.setBounds (refreshButtonArea);
-}
+void LoopRollAudioProcessorEditor::resized() {}
 
 //==============================================================================
 void LoopRollAudioProcessorEditor::paint (juce::Graphics& g)
 {
     paintPlates (g);
     paintLights (g);
-    paintCentre (g);
+    paintModules (g);
     paintReadouts (g);
 }
 
@@ -567,196 +609,229 @@ void LoopRollAudioProcessorEditor::paintPlates (juce::Graphics& g)
     g.fillAll (LF::ground());
 
     // Plaque principale et son liseré intérieur
-    const auto plate = polyline ({ { 28, 10 }, { 732, 10 }, { 750, 28 }, { 750, 452 }, { 732, 470 }, { 28, 470 }, { 10, 452 }, { 10, 28 } }, true);
+    const auto plateArea = getLocalBounds().toFloat().reduced (10.0f);
+    const auto plate = LF::chamferedRect (plateArea, 18.0f);
     g.setColour (LF::plate());
     g.fillPath (plate);
     g.setColour (LF::line());
     g.strokePath (plate, juce::PathStrokeType (1.5f));
 
     g.setColour (juce::Colour (0xffe1e6ec));
-    g.strokePath (polyline ({ { 31, 16 }, { 729, 16 }, { 744, 31 }, { 744, 449 }, { 729, 464 }, { 31, 464 }, { 16, 449 }, { 16, 31 } }, true),
-                  juce::PathStrokeType (1.0f));
+    g.strokePath (LF::chamferedRect (plateArea.reduced (6.0f), 15.0f), juce::PathStrokeType (1.0f));
 
     // Joints de l'en-tête et du pied
+    const float w = (float) editorWidth, mid = w * 0.5f;
     g.setColour (LF::seam());
-    g.strokePath (polyline ({ { 16, 64 }, { 300, 64 }, { 312, 76 }, { 448, 76 }, { 460, 64 }, { 744, 64 } }), juce::PathStrokeType (1.2f));
-    g.strokePath (polyline ({ { 16, 440 }, { 300, 440 }, { 312, 428 }, { 448, 428 }, { 460, 440 }, { 744, 440 } }), juce::PathStrokeType (1.2f));
-    g.drawLine (150.0f, 440.0f, 150.0f, 464.0f, 1.2f);
-    g.drawLine (610.0f, 440.0f, 610.0f, 464.0f, 1.2f);
+    g.strokePath (polyline ({ { 16.0f, 64.0f }, { mid - 80.0f, 64.0f }, { mid - 68.0f, 76.0f },
+                              { mid + 68.0f, 76.0f }, { mid + 80.0f, 64.0f }, { w - 16.0f, 64.0f } }), juce::PathStrokeType (1.2f));
+    g.drawLine (16.0f, 536.0f, w - 16.0f, 536.0f, 1.2f);
 
-    // Baies des deux potards
-    const auto bayShape = polyline ({ { 58, 88 }, { 302, 88 }, { 326, 112 }, { 326, 324 }, { 302, 348 }, { 58, 348 }, { 34, 324 }, { 34, 112 } }, true);
-    const auto bayInner = polyline ({ { 61, 95 }, { 299, 95 }, { 319, 115 }, { 319, 321 }, { 299, 341 }, { 61, 341 }, { 41, 321 }, { 41, 115 } }, true);
-
-    for (const bool right : { false, true })
+    // Baies des potards et panneaux du bas
+    for (int column = 0; column < numColumns; ++column)
     {
+        const auto bay = bayArea (column).toFloat();
         g.setColour (LF::bay());
-        g.fillPath (right ? mirrored (bayShape) : bayShape);
+        g.fillPath (LF::chamferedRect (bay, 22.0f));
         g.setColour (juce::Colour (0xffc0cad6));
-        g.strokePath (right ? mirrored (bayShape) : bayShape, juce::PathStrokeType (1.2f));
+        g.strokePath (LF::chamferedRect (bay, 22.0f), juce::PathStrokeType (1.2f));
         g.setColour (juce::Colours::white);
-        g.strokePath (right ? mirrored (bayInner) : bayInner, juce::PathStrokeType (1.5f));
-    }
+        g.strokePath (LF::chamferedRect (bay.reduced (7.0f), 19.0f), juce::PathStrokeType (1.5f));
 
-    // Barres obliques entre les deux grands boutons
-    juce::Path dashes;
-    for (const float x : { 358.0f, 368.0f })
-    {
-        dashes.startNewSubPath (x, 381.0f);
-        dashes.lineTo (x + 6.0f, 403.0f);
-        dashes.startNewSubPath (mirrorX (x), 381.0f);
-        dashes.lineTo (mirrorX (x + 6.0f), 403.0f);
+        const auto module = moduleArea (column).toFloat();
+        g.setColour (LF::bay());
+        g.fillPath (LF::chamferedRect (module, 14.0f));
+        g.setColour (juce::Colour (0xffc0cad6));
+        g.strokePath (LF::chamferedRect (module, 14.0f), juce::PathStrokeType (1.2f));
     }
-
-    g.setColour (juce::Colour (0xffa9b6c8));
-    g.strokePath (dashes, juce::PathStrokeType (3.0f));
 }
 
 void LoopRollAudioProcessorEditor::paintLights (juce::Graphics& g)
 {
-    // Néons d'angle des baies : gauche = LOOP, droite = REFRESH
-    const Pt topStart { 48, 170 }, topEnd { 128, 102 }, bottomStart { 48, 286 }, bottomEnd { 64, 334 };
-    const auto topStrip = polyline ({ topStart, { 48, 118 }, { 64, 102 }, topEnd });
-    const auto bottomStrip = polyline ({ bottomStart, { 48, 318 }, bottomEnd });
+    const bool moduleOn[numColumns] = { loopOn, refreshOn, stutterOn, filterOn };
 
-    for (const bool right : { false, true })
+    for (int column = 0; column < numColumns; ++column)
     {
-        const bool lit = right ? refreshOn : loopOn;
-        const auto top = right ? mirrored (topStrip) : topStrip;
-        const auto bottom = right ? mirrored (bottomStrip) : bottomStrip;
+        const float x = (float) columnX (column);
+        const float right = x + (float) columnWidth;
+        const bool lit = moduleOn[column];
+
+        // Néons d'angle de la baie, et voyants du pied
+        const Pt leftStart { x + 13.0f, 150.0f }, leftEnd { x + 80.0f, 97.0f };
+        const Pt rightStart { right - 13.0f, 150.0f }, rightEnd { right - 80.0f, 97.0f };
+        const auto leftStrip = polyline ({ leftStart, { x + 13.0f, 112.0f }, { x + 28.0f, 97.0f }, leftEnd });
+        const auto rightStrip = polyline ({ rightStart, { right - 13.0f, 112.0f }, { right - 28.0f, 97.0f }, rightEnd });
+
+        juce::Path pips;
+        pips.startNewSubPath (x + 12.0f, 547.0f);
+        pips.lineTo (x + 24.0f, 547.0f);
+        pips.startNewSubPath (x + 32.0f, 547.0f);
+        pips.lineTo (x + 44.0f, 547.0f);
+
+        const juce::PathStrokeType pipStroke (2.5f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded);
 
         if (lit)
         {
-            LF::strokeGlowing (g, top, 3.0f, LF::accentGradient (right ? mirror (topStart) : topStart, right ? mirror (topEnd) : topEnd));
-            LF::strokeGlowing (g, bottom, 3.0f, LF::accentGradient (right ? mirror (bottomStart) : bottomStart, right ? mirror (bottomEnd) : bottomEnd));
+            LF::strokeGlowing (g, leftStrip, 3.0f, LF::accentGradient (leftStart, leftEnd));
+            LF::strokeGlowing (g, rightStrip, 3.0f, LF::accentGradient (rightStart, rightEnd));
+            g.setGradientFill (LF::accentGradient ({ x + 12.0f, 547.0f }, { x + 44.0f, 547.0f }));
+            g.strokePath (pips, pipStroke);
+
+            const auto button = buttonArea (column).toFloat();
+            drawHalo (g, LF::chamferedRect (button, 16.0f), LF::accentGradient (button.getTopLeft(), button.getTopRight(), true));
         }
         else
         {
             const juce::PathStrokeType stroke (3.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded);
             g.setColour (LF::unlit());
-            g.strokePath (top, stroke);
-            g.strokePath (bottom, stroke);
-        }
-
-        // Voyants du pied
-        juce::Path pips;
-        pips.startNewSubPath (40.0f, 452.0f);
-        pips.lineTo (52.0f, 452.0f);
-        pips.startNewSubPath (60.0f, 452.0f);
-        pips.lineTo (72.0f, 452.0f);
-
-        if (lit)
-            g.setGradientFill (LF::accentGradient (right ? mirror ({ 40, 452 }) : Pt { 40, 452 }, right ? mirror ({ 72, 452 }) : Pt { 72, 452 }));
-        else
+            g.strokePath (leftStrip, stroke);
+            g.strokePath (rightStrip, stroke);
             g.setColour (LF::line());
-
-        g.strokePath (right ? mirrored (pips) : pips, juce::PathStrokeType (2.5f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            g.strokePath (pips, pipStroke);
+        }
     }
 
-    // Barres obliques du haut : témoin de boucle active
-    juce::Path leftBars;
-    for (const float x : { 334.0f, 346.0f, 358.0f })
+    // Barres obliques du haut : allumées dès qu'un effet tourne
+    const float mid = (float) editorWidth * 0.5f;
+    juce::Path leftBars, rightBars;
+
+    for (const float offset : { 46.0f, 34.0f, 22.0f })
     {
-        leftBars.startNewSubPath (x, 30.0f);
-        leftBars.lineTo (x + 9.0f, 58.0f);
+        leftBars.startNewSubPath (mid - offset, 30.0f);
+        leftBars.lineTo (mid - offset + 9.0f, 58.0f);
+        rightBars.startNewSubPath (mid + offset, 30.0f);
+        rightBars.lineTo (mid + offset - 9.0f, 58.0f);
     }
 
-    if (loopOn)
+    if (loopOn || stutterOn)
     {
-        LF::strokeGlowing (g, leftBars, 4.0f, LF::accentGradient ({ 334, 44 }, { 367, 44 }), false);
-        LF::strokeGlowing (g, mirrored (leftBars), 4.0f, LF::accentGradient (mirror ({ 334, 44 }), mirror ({ 367, 44 })), false);
+        LF::strokeGlowing (g, leftBars, 4.0f, LF::accentGradient ({ mid - 46.0f, 44.0f }, { mid - 13.0f, 44.0f }), false);
+        LF::strokeGlowing (g, rightBars, 4.0f, LF::accentGradient ({ mid + 46.0f, 44.0f }, { mid + 13.0f, 44.0f }), false);
     }
     else
     {
         g.setColour (LF::unlit());
         g.strokePath (leftBars, juce::PathStrokeType (4.0f));
-        g.strokePath (mirrored (leftBars), juce::PathStrokeType (4.0f));
+        g.strokePath (rightBars, juce::PathStrokeType (4.0f));
     }
-
-    // Halo des boutons allumés
-    const auto halo = [&g] (juce::Rectangle<int> area, float cut)
-    {
-        const auto bounds = area.toFloat();
-        drawHalo (g, LF::chamferedRect (bounds, cut), LF::accentGradient (bounds.getTopLeft(), bounds.getTopRight(), true));
-    };
-
-    halo (syncMode ? syncButtonArea : freeButtonArea, 8.0f);
-
-    if (loopOn)
-        halo (loopButtonArea, 16.0f);
-
-    if (refreshOn)
-        halo (refreshButtonArea, 16.0f);
 }
 
-void LoopRollAudioProcessorEditor::paintCentre (juce::Graphics& g)
+void LoopRollAudioProcessorEditor::paintModules (juce::Graphics& g)
 {
-    // Pistes de circuit autour de l'afficheur d'enveloppe
-    g.setColour (juce::Colour (0xff9fb0c6));
-    g.drawLine (380.0f, 212.0f, 380.0f, 224.0f, 1.2f);
-    g.drawLine (335.0f, 239.0f, 342.0f, 239.0f, 1.2f);
-    g.drawLine (418.0f, 239.0f, 425.0f, 239.0f, 1.2f);
-    g.drawLine (352.0f, 338.0f, 408.0f, 338.0f, 1.2f);
+    // Titres des panneaux du bas
+    static const char* const titles[numColumns] = { "LOOP FADES", "CHAIN ORDER", "STUTTER SHAPE", "FILTER RESPONSE" };
 
-    for (const float x : { 332.0f, 428.0f })
+    g.setColour (LF::dimInk());
+    g.setFont (lookAndFeel.font (9.0f, false, 0.12f));
+
+    for (int column = 0; column < numColumns; ++column)
+        g.drawText (titles[column], moduleArea (column).withTrimmedLeft (14).withHeight (24), juce::Justification::centredLeft, false);
+
+    // Cadre d'un petit afficheur ; renvoie la zone de tracé.
+    const auto frame = [&g] (juce::Rectangle<int> area)
     {
-        const auto node = juce::Rectangle<float> (6.4f, 6.4f).withCentre ({ x, 239.0f });
+        const auto bounds = area.toFloat();
+        g.setColour (juce::Colour (0xffb9c3d0));
+        g.fillPath (LF::chamferedRect (bounds, 6.0f));
         g.setColour (juce::Colours::white);
-        g.fillEllipse (node);
-        g.setColour (LF::blue());
-        g.drawEllipse (node, 1.5f);
+        g.fillPath (LF::chamferedRect (bounds.reduced (1.0f), 5.0f));
+        return bounds.reduced (9.0f, 8.0f);
+    };
+
+    // Trace une courbe en dégradé, remplie en dessous.
+    const auto plotCurve = [&g] (juce::Rectangle<float> plot, const juce::Path& curve)
+    {
+        auto area = curve;
+        area.lineTo (plot.getBottomRight());
+        area.lineTo (plot.getBottomLeft());
+        area.closeSubPath();
+
+        const auto gradient = LF::accentGradient (plot.getBottomLeft(), plot.getBottomRight());
+        g.setGradientFill (gradient);
+        g.setOpacity (0.16f);
+        g.fillPath (area);
+        g.setGradientFill (gradient);
+        g.setOpacity (1.0f);
+        g.strokePath (curve, juce::PathStrokeType (2.0f, juce::PathStrokeType::mitered, juce::PathStrokeType::rounded));
+    };
+
+    // --- Fondus de la boucle : forme de l'enveloppe sur un passage ---
+    {
+        const auto plot = frame (displayArea (0, 84));
+        const float fadeIn = (float) fadeInKnob.getValue() * 0.01f;
+        const float fadeOut = (float) fadeOutKnob.getValue() * 0.01f;
+        const auto at = [plot] (float position, float level) { return Pt { plot.getX() + position * plot.getWidth(), plot.getBottom() - level * plot.getHeight() }; };
+
+        juce::Path curve;
+
+        if (fadeIn + fadeOut > 1.0f)   // les deux fondus se chevauchent : triangle
+        {
+            curve.startNewSubPath (at (0.0f, 0.0f));
+            curve.lineTo (at (fadeIn / (fadeIn + fadeOut), 1.0f / (fadeIn + fadeOut)));
+            curve.lineTo (at (1.0f, 0.0f));
+        }
+        else
+        {
+            curve.startNewSubPath (at (0.0f, fadeIn > 0.0f ? 0.0f : 1.0f));
+            curve.lineTo (at (fadeIn, 1.0f));
+            curve.lineTo (at (1.0f - fadeOut, 1.0f));
+            curve.lineTo (at (1.0f, fadeOut > 0.0f ? 0.0f : 1.0f));
+        }
+
+        plotCurve (plot, curve);
     }
 
-    g.setColour (LF::plate());
-    g.fillPath (polyline ({ { 380, 332 }, { 386, 338 }, { 380, 344 }, { 374, 338 } }, true));
-    g.setGradientFill (LF::accentGradient ({ 374, 338 }, { 386, 338 }));
-    g.fillPath (polyline ({ { 380, 333 }, { 385, 338 }, { 380, 343 }, { 375, 338 } }, true));
-
-    // Afficheur d'enveloppe : la forme des fondus sur un passage de boucle
-    const auto frame = envelopeArea.toFloat();
-    g.setColour (juce::Colour (0xffb9c3d0));
-    g.fillPath (LF::chamferedRect (frame, 6.0f));
-    g.setColour (juce::Colours::white);
-    g.fillPath (LF::chamferedRect (frame.reduced (1.0f), 5.0f));
-
-    const auto plot = frame.reduced (9.0f, 7.0f);
-    const float fadeIn = (float) fadeInKnob.getValue() * 0.01f;
-    const float fadeOut = (float) fadeOutKnob.getValue() * 0.01f;
-    const auto at = [plot] (float position, float level) { return Pt { plot.getX() + position * plot.getWidth(), plot.getBottom() - level * plot.getHeight() }; };
-
-    juce::Path curve;
-
-    if (fadeIn + fadeOut > 1.0f)   // les deux fondus se chevauchent : triangle
+    // --- Stutter : deux pas du gate ---
     {
-        curve.startNewSubPath (at (0.0f, 0.0f));
-        curve.lineTo (at (fadeIn / (fadeIn + fadeOut), 1.0f / (fadeIn + fadeOut)));
-        curve.lineTo (at (1.0f, 0.0f));
-    }
-    else
-    {
-        curve.startNewSubPath (at (0.0f, fadeIn > 0.0f ? 0.0f : 1.0f));
-        curve.lineTo (at (fadeIn, 1.0f));
-        curve.lineTo (at (1.0f - fadeOut, 1.0f));
-        curve.lineTo (at (1.0f, fadeOut > 0.0f ? 0.0f : 1.0f));
+        const auto plot = frame (displayArea (2, 150));
+        const double shape = shapeKnob.getValue() * 0.01;
+        const int numPoints = 120;
+        juce::Path curve;
+
+        for (int i = 0; i <= numPoints; ++i)
+        {
+            const double position = (double) i / numPoints;
+            const double phase = std::fmod (position * 2.0, 1.0);
+            const double level = position >= 1.0 ? 0.0 : StutterGate::shapeGain (phase, shape) * juce::jmin (1.0, phase / 0.03);
+            const Pt point { plot.getX() + (float) position * plot.getWidth(), plot.getBottom() - (float) level * plot.getHeight() };
+
+            if (i == 0)
+                curve.startNewSubPath (point);
+            else
+                curve.lineTo (point);
+        }
+
+        plotCurve (plot, curve);
     }
 
-    auto area = curve;
-    area.lineTo (plot.getBottomRight());
-    area.lineTo (plot.getBottomLeft());
-    area.closeSubPath();
-
-    const auto gradient = LF::accentGradient (plot.getBottomLeft(), plot.getBottomRight());
-    g.setGradientFill (gradient);
-    g.setOpacity (0.16f);
-    g.fillPath (area);
-    g.setGradientFill (gradient);
-    g.setOpacity (1.0f);
-    g.strokePath (curve, juce::PathStrokeType (2.0f, juce::PathStrokeType::mitered, juce::PathStrokeType::rounded));
-
-    // Libellés et valeurs des deux fondus
-    const auto caption = [this, &g] (juce::Rectangle<int> knobArea, const juce::String& name, juce::Slider& knob)
+    // --- Filtre : courbe de réponse, de 20 Hz à 20 kHz ---
     {
-        const auto column = juce::Rectangle<int> (52, 12).withCentre ({ knobArea.getCentreX(), knobArea.getBottom() + 8 });
+        const auto plot = frame (displayArea (3, 150));
+        const double cutoff = cutoffKnob.getValue();
+        const double quality = OutputFilter::qualityFor (resonanceKnob.getValue() * 0.01);
+        const int numPoints = 80;
+        juce::Path curve;
+
+        for (int i = 0; i <= numPoints; ++i)
+        {
+            const double position = (double) i / numPoints;
+            const double frequency = OutputFilter::minFrequency * std::pow (OutputFilter::maxFrequency / OutputFilter::minFrequency, position);
+            const double decibels = 20.0 * std::log10 (juce::jmax (1.0e-4, OutputFilter::magnitudeAt (frequency, cutoff, quality, bandPass)));
+            const double level = juce::jlimit (0.0, 1.0, (decibels + 36.0) / 56.0);   // de -36 dB (bas) à +20 dB (haut)
+            const Pt point { plot.getX() + (float) position * plot.getWidth(), plot.getBottom() - (float) level * plot.getHeight() };
+
+            if (i == 0)
+                curve.startNewSubPath (point);
+            else
+                curve.lineTo (point);
+        }
+
+        plotCurve (plot, curve);
+    }
+
+    // Libellés et valeurs des petits potards
+    const auto caption = [this, &g] (juce::Slider& knob, const juce::String& name)
+    {
+        const auto column = juce::Rectangle<int> (60, 12).withCentre ({ knob.getBounds().getCentreX(), knob.getBottom() + 8 });
 
         g.setColour (LF::dimInk());
         g.setFont (lookAndFeel.font (9.0f, false, 0.1f));
@@ -767,8 +842,10 @@ void LoopRollAudioProcessorEditor::paintCentre (juce::Graphics& g)
         g.drawText (knob.getTextFromValue (knob.getValue()), column.translated (0, 12), juce::Justification::centred, false);
     };
 
-    caption (fadeInKnobArea, "IN", fadeInKnob);
-    caption (fadeOutKnobArea, "OUT", fadeOutKnob);
+    caption (fadeInKnob, "IN");
+    caption (fadeOutKnob, "OUT");
+    caption (shapeKnob, "SHAPE");
+    caption (resonanceKnob, "RESO");
 }
 
 void LoopRollAudioProcessorEditor::paintReadouts (juce::Graphics& g)
@@ -780,30 +857,30 @@ void LoopRollAudioProcessorEditor::paintReadouts (juce::Graphics& g)
 
     const auto brandFont = lookAndFeel.font (11.0f, false, 0.26f);
     const float brandWidth = textWidth (brandFont, "PHRAGMA");
+    const auto brandArea = juce::Rectangle<float> ((float) editorWidth - 336.0f, 16.0f, 300.0f, 48.0f);
 
     g.setColour (LF::dimInk());
     g.setFont (brandFont);
-    g.drawText ("PHRAGMA", juce::Rectangle<float> (424.0f, 16.0f, 300.0f, 48.0f), juce::Justification::centredRight, false);
+    g.drawText ("PHRAGMA", brandArea, juce::Justification::centredRight, false);
 
     // Numéro de version : pour vérifier d'un coup d'œil quelle version le DAW a chargée
     g.setFont (lookAndFeel.font (10.0f, false, 0.08f));
-    g.drawText ("V" LOOPROLL_VERSION, juce::Rectangle<float> (424.0f, 16.0f, 300.0f - brandWidth - 16.0f, 48.0f),
-                juce::Justification::centredRight, false);
+    g.drawText ("V" LOOPROLL_VERSION, brandArea.withTrimmedRight (brandWidth + 16.0f), juce::Justification::centredRight, false);
 
-    // Afficheurs sous les potards
-    const auto readout = [this, &g] (juce::Rectangle<int> area, const juce::String& name)
+    // Afficheurs sous les grands potards
+    static const char* const names[numColumns] = { "LENGTH", "EVERY", "RATE", "CUTOFF" };
+
+    for (int column = 0; column < numColumns; ++column)
     {
-        const auto frame = area.toFloat();
+        const auto area = readoutArea (column);
+        const auto bounds = area.toFloat();
         g.setColour (juce::Colour (0xffb9c3d0));
-        g.fillPath (LF::chamferedRect (frame, 8.0f));
+        g.fillPath (LF::chamferedRect (bounds, 8.0f));
         g.setColour (juce::Colours::white);
-        g.fillPath (LF::chamferedRect (frame.reduced (1.0f), 7.0f));
+        g.fillPath (LF::chamferedRect (bounds.reduced (1.0f), 7.0f));
 
         g.setColour (LF::dimInk());
         g.setFont (lookAndFeel.font (10.0f, false, 0.12f));
-        g.drawText (name, area.withTrimmedLeft (14), juce::Justification::centredLeft, false);
-    };
-
-    readout (lengthReadout, "LENGTH");
-    readout (refreshReadout, "REFRESH EVERY");
+        g.drawText (names[column], area.withTrimmedLeft (14), juce::Justification::centredLeft, false);
+    }
 }

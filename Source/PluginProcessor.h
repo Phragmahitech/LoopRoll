@@ -3,6 +3,8 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include "LooperEngine.h"
+#include "OutputFilter.h"
+#include "StutterGate.h"
 
 class LoopRollAudioProcessor final : public juce::AudioProcessor
 {
@@ -18,14 +20,28 @@ public:
     static constexpr const char* refreshDivisionId = "refreshDivision";
     static constexpr const char* fadeInId          = "fadeIn";
     static constexpr const char* fadeOutId         = "fadeOut";
+    static constexpr const char* refreshModeId     = "refreshMode";
+    static constexpr const char* stutterId         = "stutter";
+    static constexpr const char* stutterModeId     = "stutterMode";
+    static constexpr const char* stutterTimeId     = "stutterTime";
+    static constexpr const char* stutterDivisionId = "stutterDivision";
+    static constexpr const char* stutterShapeId    = "stutterShape";
+    static constexpr const char* orderId           = "order";
+    static constexpr const char* filterId          = "filter";
+    static constexpr const char* filterTypeId      = "filterType";
+    static constexpr const char* filterCutoffId    = "filterCutoff";
+    static constexpr const char* filterResonanceId = "filterResonance";
 
     // Plages du mode free (ms)
     static constexpr float minTimeMs = 10.0f;
     static constexpr float maxTimeMs = 4000.0f;
     static constexpr float minRefreshMs = 50.0f;
     static constexpr float maxRefreshMs = 16000.0f;
+    static constexpr float minStutterMs = 5.0f;
+    static constexpr float maxStutterMs = 1000.0f;
 
-    // Les deux potards vont du plus long (à gauche) au plus court (à droite).
+    // Les potards de durée vont du plus long (à gauche) au plus court (à droite).
+    // Chaque module (boucle, refresh, stutter) a son propre mode FREE / SYNC.
 
     /** Divisions de la boucle en mode sync, de la plus longue à la plus courte. */
     static const juce::StringArray& getDivisionNames();
@@ -73,7 +89,10 @@ public:
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
+    // Chaîne : [stutter et looper, dans l'ordre choisi] puis filtre.
     LooperEngine engine;
+    StutterGate gate;
+    OutputFilter filter;
 
     std::atomic<float>* loopParam = nullptr;
     std::atomic<float>* modeParam = nullptr;
@@ -84,12 +103,23 @@ private:
     std::atomic<float>* refreshDivisionParam = nullptr;
     std::atomic<float>* fadeInParam = nullptr;
     std::atomic<float>* fadeOutParam = nullptr;
+    std::atomic<float>* refreshModeParam = nullptr;
+    std::atomic<float>* stutterParam = nullptr;
+    std::atomic<float>* stutterModeParam = nullptr;
+    std::atomic<float>* stutterTimeParam = nullptr;
+    std::atomic<float>* stutterDivisionParam = nullptr;
+    std::atomic<float>* stutterShapeParam = nullptr;
+    std::atomic<float>* orderParam = nullptr;
+    std::atomic<float>* filterParam = nullptr;
+    std::atomic<float>* filterTypeParam = nullptr;
+    std::atomic<float>* filterCutoffParam = nullptr;
+    std::atomic<float>* filterResonanceParam = nullptr;
 
     double currentSampleRate = 44100.0;
     double lastBpm = 120.0;
     int lastDivision = -1;
     int lastRefreshDivision = -1;
-    bool lastSync = false;
+    bool lastLoopSync = false, lastRefreshSync = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LoopRollAudioProcessor)
 };

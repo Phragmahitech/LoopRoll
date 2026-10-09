@@ -58,6 +58,11 @@ private:
 };
 
 //==============================================================================
+/**
+    Quatre modules côte à côte : LOOP, REFRESH, STUTTER, FILTER.
+    Chacun a son grand potard, son afficheur, son interrupteur (FREE / SYNC ou HP / BP),
+    son bouton marche / arrêt et un panneau de réglages en dessous.
+*/
 class LoopRollAudioProcessorEditor final : public juce::AudioProcessorEditor
 {
 public:
@@ -70,38 +75,48 @@ public:
 private:
     using APVTS = juce::AudioProcessorValueTreeState;
 
-    void configureMainKnob (juce::Slider&, const char* parameterId);
-    void configureMiniKnob (juce::Slider&, const char* parameterId);
-    void configureValueLabel (juce::Label&, bool isRefresh);
-    void configureButton (juce::TextButton&, bool togglesOnClick, bool big);
+    /** Interrupteur à deux positions relié à un paramètre à deux choix. */
+    struct TwoWaySwitch
+    {
+        juce::TextButton first, second;
+        std::unique_ptr<juce::ParameterAttachment> attachment;
+    };
 
-    void modeChanged (bool sync);
+    void configureMainKnob (juce::Slider&, const char* parameterId, int column);
+    void configureMiniKnob (juce::Slider&, const char* parameterId, juce::Rectangle<int> area);
+    void configureValueLabel (juce::Label&, int column);
+    void configureToggle (juce::TextButton&, const char* parameterId, int column, std::function<void (bool)> onChange);
+    void configureSwitch (TwoWaySwitch&, const char* parameterId, const juce::String& firstText, const juce::String& secondText,
+                          juce::Rectangle<int> area, std::function<void (bool)> onChange);
+
+    /** Le potard affiché dans un module (celui en ms ou celui en divisions, selon son mode). */
+    juce::Slider& activeKnob (int column);
+    void setStandby (int column, bool standby);
+    void modesChanged();
     void updateValueLabels();
-    void applyTypedValue (juce::Label&, juce::Slider&);
-
-    juce::Slider& activeLengthKnob()   { return syncMode ? divisionKnob : timeKnob; }
-    juce::Slider& activeRefreshKnob()  { return syncMode ? refreshDivisionKnob : refreshTimeKnob; }
 
     void paintPlates (juce::Graphics&);
     void paintLights (juce::Graphics&);
-    void paintCentre (juce::Graphics&);
+    void paintModules (juce::Graphics&);
     void paintReadouts (juce::Graphics&);
 
     LoopRollAudioProcessor& audioProcessor;
     LoopRollLookAndFeel lookAndFeel;
 
-    bool syncMode = true, loopOn = false, refreshOn = false;
+    bool loopOn = false, refreshOn = false, stutterOn = false, filterOn = false;
+    bool loopSync = true, refreshSync = true, stutterSync = true, bandPass = false;
 
-    // Chaque grand potard est fait de deux sliders superposés, un par mode : ms en FREE, divisions en SYNC.
-    juce::Slider timeKnob, divisionKnob, refreshTimeKnob, refreshDivisionKnob;
-    juce::Slider fadeInKnob, fadeOutKnob;
-    juce::Label lengthValue, refreshValue;
-    juce::TextButton freeButton { "FREE" }, syncButton { "SYNC" }, loopButton { "LOOP" }, refreshButton { "REFRESH" };
+    // Les potards de durée sont faits de deux sliders superposés, un par mode : ms en FREE, divisions en SYNC.
+    juce::Slider timeKnob, divisionKnob, refreshTimeKnob, refreshDivisionKnob, stutterTimeKnob, stutterDivisionKnob, cutoffKnob;
+    juce::Slider fadeInKnob, fadeOutKnob, shapeKnob, resonanceKnob;
+    juce::Label valueLabels[4];
+    juce::TextButton loopButton { "LOOP" }, refreshButton { "REFRESH" }, stutterButton { "STUTTER" }, filterButton { "FILTER" };
+    TwoWaySwitch loopMode, refreshMode, stutterMode, filterType, chainOrder;
 
-    std::unique_ptr<APVTS::SliderAttachment> timeAttachment, divisionAttachment, refreshTimeAttachment,
-                                             refreshDivisionAttachment, fadeInAttachment, fadeOutAttachment;
-    std::unique_ptr<APVTS::ButtonAttachment> loopAttachment, refreshAttachment;
-    std::unique_ptr<juce::ParameterAttachment> modeAttachment, loopStateAttachment, refreshStateAttachment;
+    // Déclarés après les contrôles : détruits avant eux.
+    std::vector<std::unique_ptr<APVTS::SliderAttachment>> sliderAttachments;
+    std::vector<std::unique_ptr<APVTS::ButtonAttachment>> buttonAttachments;
+    std::vector<std::unique_ptr<juce::ParameterAttachment>> stateWatchers;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LoopRollAudioProcessorEditor)
 };

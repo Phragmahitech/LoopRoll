@@ -46,11 +46,47 @@ namespace
                  } };
     }
 
-    // Fondu en pourcentage de la durée de boucle.
-    std::unique_ptr<juce::AudioParameterFloat> makeFadeParameter (const char* id, const char* name)
+    juce::String frequencyToText (float hertz, int)
+    {
+        if (hertz >= 1000.0f)
+            return juce::String (hertz / 1000.0f, 2) + " kHz";
+
+        return juce::String (juce::roundToInt (hertz)) + " Hz";
+    }
+
+    float textToFrequency (const juce::String& text)
+    {
+        const auto t = text.trim().toLowerCase();
+        const auto value = t.retainCharacters ("0123456789.,").replaceCharacter (',', '.').getFloatValue();
+
+        // "1.2k" ou "1.2 kHz" -> 1200 Hz ; "250" ou "250 Hz" -> 250 Hz
+        return t.containsChar ('k') ? value * 1000.0f : value;
+    }
+
+    // Fréquence de coupure sur une échelle logarithmique, de 20 Hz à 20 kHz.
+    juce::NormalisableRange<float> makeFrequencyRange()
+    {
+        return { (float) OutputFilter::minFrequency, (float) OutputFilter::maxFrequency,
+                 [] (float start, float end, float normalised)
+                 {
+                     return start * std::pow (end / start, juce::jlimit (0.0f, 1.0f, normalised));
+                 },
+                 [] (float start, float end, float value)
+                 {
+                     return juce::jlimit (0.0f, 1.0f, std::log (juce::jlimit (start, end, value) / start) / std::log (end / start));
+                 },
+                 [] (float start, float end, float value)
+                 {
+                     const float step = value < 1000.0f ? 1.0f : 10.0f;
+                     return juce::jlimit (start, end, std::round (value / step) * step);
+                 } };
+    }
+
+    // Réglage en pourcentage (fondus, forme du stutter, résonance).
+    std::unique_ptr<juce::AudioParameterFloat> makePercentParameter (const char* id, const char* name, float defaultPercent)
     {
         return std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { id, 1 }, name,
-                                                            juce::NormalisableRange<float> (0.0f, 100.0f, 1.0f), 0.0f,
+                                                            juce::NormalisableRange<float> (0.0f, 100.0f, 1.0f), defaultPercent,
                                                             juce::AudioParameterFloatAttributes()
                                                                 .withStringFromValueFunction ([] (float value, int) { return juce::String (juce::roundToInt (value)) + " %"; })
                                                                 .withValueFromStringFunction ([] (const juce::String& text) { return text.retainCharacters ("0123456789.,").replaceCharacter (',', '.').getFloatValue(); }));
@@ -99,8 +135,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout LoopRollAudioProcessor::crea
 
     layout.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { loopId, 1 }, "Loop", false));
 
-    layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { modeId, 1 }, "Mode",
-                                                              juce::StringArray { "Free", "Sync" }, 1));
+    const juce::StringArray freeOrSync { "Free", "Sync" };
+
+    layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { modeId, 1 }, "Loop Mode", freeOrSync, 1));
 
     layout.add (makeTimeParameter (timeId, "Time", minTimeMs, maxTimeMs, 250.0f));
 
@@ -114,8 +151,31 @@ juce::AudioProcessorValueTreeState::ParameterLayout LoopRollAudioProcessor::crea
     layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { refreshDivisionId, 1 }, "Refresh Division",
                                                               getRefreshDivisionNames(), 2));   // 1/1
 
-    layout.add (makeFadeParameter (fadeInId, "Fade In"));
-    layout.add (makeFadeParameter (fadeOutId, "Fade Out"));
+    layout.add (makePercentParameter (fadeInId, "Fade In", 0.0f));
+    layout.add (makePercentParameter (fadeOutId, "Fade Out", 0.0f));
+
+    // Depuis la v0.4 : le refresh et le stutter ont leur propre mode FREE / SYNC.
+    layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { refreshModeId, 1 }, "Refresh Mode", freeOrSync, 1));
+
+    layout.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { stutterId, 1 }, "Stutter", false));
+    layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { stutterModeId, 1 }, "Stutter Mode", freeOrSync, 1));
+    layout.add (makeTimeParameter (stutterTimeId, "Stutter Time", minStutterMs, maxStutterMs, 125.0f));
+    layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { stutterDivisionId, 1 }, "Stutter Division",
+                                                              getDivisionNames(), 4));   // 1/16
+    layout.add (makePercentParameter (stutterShapeId, "Stutter Shape", 50.0f));
+
+    layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { orderId, 1 }, "Chain Order",
+                                                              juce::StringArray { "Stutter > Loop", "Loop > Stutter" }, 1));
+
+    layout.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { filterId, 1 }, "Filter", false));
+    layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { filterTypeId, 1 }, "Filter Type",
+                                                              juce::StringArray { "High Pass", "Band Pass" }, 0));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { filterCutoffId, 1 }, "Filter Cutoff",
+                                                             makeFrequencyRange(), 20.0f,
+                                                             juce::AudioParameterFloatAttributes()
+                                                                 .withStringFromValueFunction (frequencyToText)
+                                                                 .withValueFromStringFunction (textToFrequency)));
+    layout.add (makePercentParameter (filterResonanceId, "Filter Resonance", 20.0f));
 
     return layout;
 }
@@ -135,6 +195,17 @@ LoopRollAudioProcessor::LoopRollAudioProcessor()
     refreshDivisionParam = apvts.getRawParameterValue (refreshDivisionId);
     fadeInParam          = apvts.getRawParameterValue (fadeInId);
     fadeOutParam         = apvts.getRawParameterValue (fadeOutId);
+    refreshModeParam     = apvts.getRawParameterValue (refreshModeId);
+    stutterParam         = apvts.getRawParameterValue (stutterId);
+    stutterModeParam     = apvts.getRawParameterValue (stutterModeId);
+    stutterTimeParam     = apvts.getRawParameterValue (stutterTimeId);
+    stutterDivisionParam = apvts.getRawParameterValue (stutterDivisionId);
+    stutterShapeParam    = apvts.getRawParameterValue (stutterShapeId);
+    orderParam           = apvts.getRawParameterValue (orderId);
+    filterParam          = apvts.getRawParameterValue (filterId);
+    filterTypeParam      = apvts.getRawParameterValue (filterTypeId);
+    filterCutoffParam    = apvts.getRawParameterValue (filterCutoffId);
+    filterResonanceParam = apvts.getRawParameterValue (filterResonanceId);
 }
 
 bool LoopRollAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -149,12 +220,17 @@ void LoopRollAudioProcessor::prepareToPlay (double sampleRate, int)
 {
     currentSampleRate = sampleRate > 0.0 ? sampleRate : 44100.0;
     engine.prepare (currentSampleRate, juce::jmax (1, getTotalNumOutputChannels()), maxLoopSeconds);
+    gate.prepare (currentSampleRate);
+    filter.prepare (currentSampleRate);
     lastDivision = -1;
+    lastRefreshDivision = -1;
 }
 
 void LoopRollAudioProcessor::reset()
 {
     engine.reset();
+    gate.reset();
+    filter.reset();
 }
 
 void LoopRollAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
@@ -168,52 +244,108 @@ void LoopRollAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
     for (int ch = numIn; ch < numOut; ++ch)
         buffer.clear (ch, 0, numSamples);
 
-    // Tempo de l'hôte (on garde le dernier connu si l'hôte n'en fournit pas).
+    // Tempo et position de l'hôte (on garde le dernier tempo connu si l'hôte n'en fournit pas).
+    double hostBeats = 0.0;
+    bool hostIsMoving = false;
+
     if (auto* hostPlayHead = getPlayHead())
+    {
         if (const auto position = hostPlayHead->getPosition())
+        {
             if (const auto bpm = position->getBpm())
                 if (*bpm > 1.0)
                     lastBpm = *bpm;
 
-    const bool sync = modeParam->load (std::memory_order_relaxed) > 0.5f;
-    const bool refresh = refreshParam->load (std::memory_order_relaxed) > 0.5f;
-    const int division = juce::roundToInt (divisionParam->load (std::memory_order_relaxed));
-    const int refreshDivision = juce::roundToInt (refreshDivisionParam->load (std::memory_order_relaxed));
-
-    if (sync)
-    {
-        const double samplesPerBeat = 60.0 / lastBpm * currentSampleRate;
-
-        // Changement de division (ou passage en sync) : on recale sur la grille de départ.
-        // Une simple variation de tempo, elle, ne provoque pas de saut.
-        engine.setLoopLength (getDivisionInBeats (division) * samplesPerBeat,
-                              division != lastDivision || ! lastSync);
-        engine.setRefresh (refresh, getRefreshDivisionInBeats (refreshDivision) * samplesPerBeat,
-                           refreshDivision != lastRefreshDivision || ! lastSync);
+            if (const auto beats = position->getPpqPosition())
+            {
+                hostBeats = *beats;
+                hostIsMoving = position->getIsPlaying();
+            }
+        }
     }
+
+    const auto value = [] (const std::atomic<float>* parameter) { return parameter->load (std::memory_order_relaxed); };
+    const double samplesPerBeat = 60.0 / lastBpm * currentSampleRate;
+    const double samplesPerMs = 0.001 * currentSampleRate;
+
+    // --- Boucle ---
+    const bool loopSync = value (modeParam) > 0.5f;
+    const int division = juce::roundToInt (value (divisionParam));
+
+    // Changement de division (ou passage en sync) : on recale sur la grille de départ.
+    // Une simple variation de tempo, elle, ne provoque pas de saut.
+    if (loopSync)
+        engine.setLoopLength (getDivisionInBeats (division) * samplesPerBeat, division != lastDivision || ! lastLoopSync);
     else
-    {
-        const double samplesPerMs = 0.001 * currentSampleRate;
+        engine.setLoopLength ((double) value (timeParam) * samplesPerMs, false);
 
-        engine.setLoopLength ((double) timeParam->load (std::memory_order_relaxed) * samplesPerMs, false);
-        engine.setRefresh (refresh, (double) refreshTimeParam->load (std::memory_order_relaxed) * samplesPerMs, false);
-    }
+    // --- Refresh ---
+    const bool refresh = value (refreshParam) > 0.5f;
+    const bool refreshSync = value (refreshModeParam) > 0.5f;
+    const int refreshDivision = juce::roundToInt (value (refreshDivisionParam));
 
-    lastSync = sync;
+    if (refreshSync)
+        engine.setRefresh (refresh, getRefreshDivisionInBeats (refreshDivision) * samplesPerBeat,
+                           refreshDivision != lastRefreshDivision || ! lastRefreshSync);
+    else
+        engine.setRefresh (refresh, (double) value (refreshTimeParam) * samplesPerMs, false);
+
+    lastLoopSync = loopSync;
+    lastRefreshSync = refreshSync;
     lastDivision = division;
     lastRefreshDivision = refreshDivision;
 
-    engine.setFades (0.01 * (double) fadeInParam->load (std::memory_order_relaxed),
-                     0.01 * (double) fadeOutParam->load (std::memory_order_relaxed));
+    engine.setFades (0.01 * (double) value (fadeInParam), 0.01 * (double) value (fadeOutParam));
+    engine.setActive (value (loopParam) > 0.5f);
 
-    engine.setActive (loopParam->load (std::memory_order_relaxed) > 0.5f);
-    engine.process (buffer.getArrayOfWritePointers(), juce::jmin (numIn, numOut, buffer.getNumChannels()), numSamples);
+    // --- Stutter ---
+    if (value (stutterModeParam) > 0.5f)
+    {
+        const double stepInBeats = getDivisionInBeats (juce::roundToInt (value (stutterDivisionParam)));
+        gate.setStepLength (stepInBeats * samplesPerBeat);
+
+        // Quand le transport défile, les pas du gate tombent sur la grille de l'hôte.
+        if (hostIsMoving)
+            gate.syncPhase (hostBeats / stepInBeats);
+    }
+    else
+    {
+        gate.setStepLength ((double) value (stutterTimeParam) * samplesPerMs);
+    }
+
+    gate.setShape (0.01 * (double) value (stutterShapeParam));
+    gate.setActive (value (stutterParam) > 0.5f);
+
+    // --- Filtre ---
+    filter.setFrequency ((double) value (filterCutoffParam));
+    filter.setResonance (0.01 * (double) value (filterResonanceParam));
+    filter.setBandPass (value (filterTypeParam) > 0.5f);
+    filter.setActive (value (filterParam) > 0.5f);
+
+    // --- Chaîne : stutter et looper dans l'ordre choisi, puis filtre ---
+    const auto channels = buffer.getArrayOfWritePointers();
+    const int numChannels = juce::jmin (numIn, numOut, buffer.getNumChannels());
+
+    if (value (orderParam) < 0.5f)
+    {
+        gate.process (channels, numChannels, numSamples);
+        engine.process (channels, numChannels, numSamples);
+    }
+    else
+    {
+        engine.process (channels, numChannels, numSamples);
+        gate.process (channels, numChannels, numSamples);
+    }
+
+    filter.process (channels, numChannels, numSamples);
 }
 
 void LoopRollAudioProcessor::processBlockBypassed (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
 {
     // En bypass on repart d'un état propre : pas de vieille boucle rejouée à la réactivation.
     engine.reset();
+    gate.reset();
+    filter.reset();
     AudioProcessor::processBlockBypassed (buffer, midi);
 }
 
@@ -231,9 +363,25 @@ void LoopRollAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 
 void LoopRollAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
-    if (const auto xml = getXmlFromBinary (data, sizeInBytes))
-        if (xml->hasTagName (apvts.state.getType()))
-            apvts.replaceState (juce::ValueTree::fromXml (*xml));
+    const auto xml = getXmlFromBinary (data, sizeInBytes);
+
+    if (xml == nullptr || ! xml->hasTagName (apvts.state.getType()))
+        return;
+
+    auto state = juce::ValueTree::fromXml (*xml);
+
+    // Jusqu'à la v0.3, un seul mode FREE / SYNC servait à la boucle et au refresh :
+    // un état de cette époque applique donc son mode aux deux.
+    const auto loopMode = state.getChildWithProperty ("id", modeId);
+
+    if (loopMode.isValid() && ! state.getChildWithProperty ("id", refreshModeId).isValid())
+    {
+        auto refreshMode = loopMode.createCopy();
+        refreshMode.setProperty ("id", refreshModeId, nullptr);
+        state.appendChild (refreshMode, nullptr);
+    }
+
+    apvts.replaceState (state);
 }
 
 //==============================================================================

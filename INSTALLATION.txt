@@ -29,22 +29,42 @@ Windows (64 bits)
 
 Utilisation
 -----------
+Quatre modules, de gauche a droite. Chacun a son bouton marche / arret.
+
 LOOP           Allume : capture l'audio a partir de cet instant puis le repete.
                Eteint : retour au signal direct.
-LENGTH         Duree de la boucle. Tourner a droite raccourcit.
-REFRESH        Allume : la boucle est recapturee a intervalle regulier.
-REFRESH EVERY  Intervalle entre deux recaptures. Tourner a droite = plus frequent.
-SYNC           Les deux potards suivent le tempo du projet
-               (boucle : 1/1 a 1/64, refresh : 4 mesures a 1/32).
-FREE           Durees libres (boucle : 4 s a 10 ms, refresh : 16 s a 50 ms).
-               Clic sur la valeur pour la saisir au clavier.
-
-IN / OUT       Fondu d'entree et de sortie sur chaque passage de la boucle,
+  LENGTH       Duree de la boucle. Tourner a droite raccourcit.
+  IN / OUT     Fondu d'entree et de sortie sur chaque passage de la boucle,
                en % de sa duree. 0 % = boucle brute.
+
+REFRESH        Allume : la boucle est recapturee a intervalle regulier.
+  EVERY        Intervalle entre deux recaptures. Tourner a droite = plus frequent.
+  CHAIN ORDER  Ordre du stutter et du looper (le filtre est toujours en dernier) :
+               LOOP > STUTTER : la boucle repete le son brut, le gate hache le resultat.
+               STUTTER > LOOP : le son est hache, puis la boucle repete ce son hache.
+
+STUTTER        Gate rythmique : chaque pas ouvre le son puis le referme en dent
+               de scie descendante.
+  RATE         Duree d'un pas. Tourner a droite = plus rapide.
+  SHAPE        Courbe de la descente : 0 % = quasi carre, 50 % = lineaire,
+               100 % = tres ferme.
+
+FILTER         Filtre resonant sur tout le son, en fin de chaine.
+  CUTOFF       Frequence, de 20 Hz a 20 kHz.
+  HP / BP      Passe-haut ou passe-bande.
+  RESO         Resonance.
+
+FREE / SYNC    Un interrupteur par module (LOOP, REFRESH, STUTTER), independants.
+               SYNC : divisions calees sur le tempo du projet.
+               FREE : durees libres. Clic sur la valeur pour la saisir au clavier
+               (pareil pour la frequence du filtre).
+
+LOOP, STUTTER et FILTER fonctionnent seuls ou ensemble.
+REFRESH n'agit que quand LOOP est allume.
 
 Le numero de version est affiche en haut a droite de l'interface.
 
-Exemple : LENGTH 1/16 + REFRESH EVERY 1/4 = un seizieme de direct puis trois
+Exemple : LENGTH 1/16 + EVERY 1/4 = un seizieme de direct puis trois
 repetitions, a chaque noire.
 
 Tous les controles sont automatisables et assignables en MIDI depuis le DAW.
