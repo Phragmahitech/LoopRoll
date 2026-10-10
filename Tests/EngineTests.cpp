@@ -639,7 +639,7 @@ static void testStutter()
 
         const int block = 500;
         const double offset = 0.25;   // au début du rendu, on est à 25 % d'un pas
-        const auto out = runMono (gate, ones, block, [&] (int start) { gate.syncPhase (offset + (double) start / step); });
+        const auto out = runMono (gate, ones, block, [&] (int start) { gate.syncPosition (offset + (double) start / step); });
 
         const int boundary = (int) ((1.0 - offset) * step) + 6 * step;   // un début de pas sur la grille
         CHECK (out[(size_t) boundary] < 0.05f && out[(size_t) (boundary + step / 10)] > 0.8f,
@@ -668,6 +668,66 @@ static void testStutter()
         CHECK (dry, "le gate ne rend pas le signal intact une fois eteint");
     }
 
+    // Profondeur : à 50 %, le gate ne descend qu'à mi-niveau.
+    {
+        StutterGate gate;
+        gate.prepare (kSampleRate);
+        gate.setStepLength ((double) step);
+        gate.setDepth (0.5);
+        const auto out = runMono (gate, ones, 256, [&] (int start) { gate.setActive (start >= ON); });
+        const int s0 = ON + 5 * step;
+        CHECK (std::abs (out[(size_t) s0] - 0.5f) < 0.03f, "profondeur 50 %% : debut de pas a %.3f", out[(size_t) s0]);
+        CHECK (std::abs (out[(size_t) (s0 + step / 2)] - 0.75f) < 0.03f, "profondeur 50 %% : mi-pas a %.3f", out[(size_t) (s0 + step / 2)]);
+
+        float lowest = 1.0f;
+        for (int t = s0; t < s0 + 4 * step; ++t) lowest = std::min (lowest, out[(size_t) t]);
+        CHECK (lowest > 0.47f, "profondeur 50 %% : le gate descend trop bas (%.3f)", lowest);
+    }
+
+    // Motif : un pas éteint reste fermé, les autres jouent normalement ; le motif fait 16 pas.
+    {
+        StutterGate gate;
+        gate.prepare (kSampleRate);
+        gate.setStepLength ((double) step);
+        gate.setPattern (0xffffu & ~(1u << 2) & ~(1u << 3));   // pas 3 et 4 éteints
+        const std::vector<float> longOnes (100000, 1.0f);
+        const auto out = runMono (gate, longOnes, 256, [&] (int start) { gate.setActive (start >= ON); });
+
+        for (int cycle : { 0, 1 })
+        {
+            const int base = ON + cycle * 16 * step;
+            float closed = 0.0f;
+            for (int t = base + 2 * step; t < base + 4 * step; ++t) closed = std::max (closed, out[(size_t) t]);
+            CHECK (closed < 1.0e-6f, "motif : les pas eteints devraient etre fermes (%.4f)", closed);
+            CHECK (out[(size_t) (base + step + step / 10)] > 0.85f, "motif : le pas 2 devrait jouer (%.3f)", out[(size_t) (base + step + step / 10)]);
+            CHECK (out[(size_t) (base + 4 * step + step / 10)] > 0.85f, "motif : le pas 5 devrait jouer (%.3f)", out[(size_t) (base + 4 * step + step / 10)]);
+        }
+
+        CHECK (maxStep (out, 0, 100000) < 0.03f, "motif : clic (%.4f)", maxStep (out, 0, 100000));
+    }
+
+    // Swing à fond : le premier pas de chaque paire dure 1,5 pas, le second 0,5.
+    {
+        StutterGate gate;
+        gate.prepare (kSampleRate);
+        gate.setStepLength ((double) step);
+        gate.setSwing (1.0);
+        gate.reset();
+        const auto out = runMono (gate, ones, 256, [&] (int start) { gate.setActive (start >= ON); });
+        const int pair = ON + 3 * 2 * step;                     // début d'une paire
+        const int second = pair + step * 3 / 2;                 // le second pas démarre en retard
+        CHECK (out[(size_t) pair] < 0.05f, "swing : la paire devrait s'ouvrir depuis zero (%.3f)", out[(size_t) pair]);
+        CHECK (std::abs (out[(size_t) (pair + step * 3 / 4)] - 0.5f) < 0.03f, "swing : mi-chemin du pas long a %.3f", out[(size_t) (pair + step * 3 / 4)]);
+        CHECK (out[(size_t) (pair + step)] > 0.25f, "swing : le pas long ne devrait pas etre referme a un pas (%.3f)", out[(size_t) (pair + step)]);
+        CHECK (out[(size_t) second] < 0.05f, "swing : le pas court devrait demarrer a 1,5 pas (%.3f)", out[(size_t) second]);
+        CHECK (std::abs (out[(size_t) (second + step / 4)] - 0.5f) < 0.03f, "swing : mi-chemin du pas court a %.3f", out[(size_t) (second + step / 4)]);
+
+        const auto step5 = StutterGate::locate (5.25, 0.0);
+        CHECK (step5.index == 5 && std::abs (step5.phase - 0.25) < 1.0e-9, "reperage d'une position sans swing (%d, %.3f)", step5.index, step5.phase);
+        const auto wrapped = StutterGate::locate (-0.5, 0.0);
+        CHECK (wrapped.index == 15 && std::abs (wrapped.phase - 0.5) < 1.0e-9, "reperage d'une position negative (%d, %.3f)", wrapped.index, wrapped.phase);
+    }
+
     // Fuzz
     {
         std::mt19937 rng (77);
@@ -680,7 +740,10 @@ static void testStutter()
             if (u (rng) < 0.1) gate.setActive (u (rng) < 0.6);
             if (u (rng) < 0.3) gate.setStepLength (std::pow (10.0, u (rng) * 6.0));
             if (u (rng) < 0.3) gate.setShape (u (rng) * 1.4 - 0.2);
-            if (u (rng) < 0.2) gate.syncPhase (u (rng) * 50.0 - 25.0);
+            if (u (rng) < 0.2) gate.setDepth (u (rng) * 1.4 - 0.2);
+            if (u (rng) < 0.2) gate.setSwing (u (rng) * 1.4 - 0.2);
+            if (u (rng) < 0.2) gate.setPattern ((unsigned int) (u (rng) * 70000.0));
+            if (u (rng) < 0.2) gate.syncPosition (u (rng) * 5000.0 - 2500.0);
         });
 
         bool ok = true;
@@ -690,13 +753,14 @@ static void testStutter()
 }
 
 // Gain mesuré du filtre sur une sinusoïde (régime établi).
-static double filterGain (double frequency, double cutoff, double resonance, bool bandPass)
+static double filterGain (double frequency, double cutoff, double resonance, int type, bool steep = false)
 {
     OutputFilter filter;
     filter.prepare (kSampleRate);
     filter.setFrequency (cutoff);
     filter.setResonance (resonance);
-    filter.setBandPass (bandPass);
+    filter.setType (type);
+    filter.setSteep (steep);
     filter.reset();
     filter.setActive (true);
 
@@ -727,37 +791,88 @@ static void testFilter()
 
     // Passe-haut à 1 kHz, sans résonance.
     {
-        const double low = filterGain (100.0, 1000.0, 0.0, false);
-        const double high = filterGain (8000.0, 1000.0, 0.0, false);
+        const double low = filterGain (100.0, 1000.0, 0.0, OutputFilter::highPass);
+        const double high = filterGain (8000.0, 1000.0, 0.0, OutputFilter::highPass);
         std::printf ("   passe-haut 1 kHz : 100 Hz -> %.1f dB, 8 kHz -> %.1f dB\n", 20.0 * std::log10 (low), 20.0 * std::log10 (high));
         CHECK (low < 0.02, "le passe-haut ne coupe pas assez les graves (%.4f)", low);
         CHECK (high > 0.9 && high < 1.1, "le passe-haut touche les aigus (%.4f)", high);
-        CHECK (filterGain (40.0, 20.0, 0.0, false) > 0.9, "a 20 Hz le passe-haut devrait etre transparent");
+        CHECK (filterGain (40.0, 20.0, 0.0, OutputFilter::highPass) > 0.9, "a 20 Hz le passe-haut devrait etre transparent");
     }
 
     // Passe-bande à 1 kHz : pic au centre, coupe de part et d'autre ; la résonance resserre et accentue.
     {
-        const double centre = filterGain (1000.0, 1000.0, 0.5, true);
-        const double below = filterGain (100.0, 1000.0, 0.5, true);
-        const double above = filterGain (10000.0, 1000.0, 0.5, true);
+        const double centre = filterGain (1000.0, 1000.0, 0.5, OutputFilter::bandPass);
+        const double below = filterGain (100.0, 1000.0, 0.5, OutputFilter::bandPass);
+        const double above = filterGain (10000.0, 1000.0, 0.5, OutputFilter::bandPass);
         const double expected = std::sqrt (OutputFilter::qualityFor (0.5));
         std::printf ("   passe-bande 1 kHz : centre %.2f (attendu %.2f), 100 Hz %.3f, 10 kHz %.3f\n", centre, expected, below, above);
         CHECK (std::abs (centre - expected) < 0.15 * expected, "pic du passe-bande : %.3f", centre);
         CHECK (below < 0.2 && above < 0.2, "le passe-bande ne coupe pas assez (%.3f, %.3f)", below, above);
-        CHECK (filterGain (1000.0, 1000.0, 1.0, true) > filterGain (1000.0, 1000.0, 0.0, true), "la resonance devrait accentuer le pic");
-        CHECK (filterGain (1000.0, 1000.0, 0.8, false) > 2.0, "passe-haut : la resonance devrait creer un pic a la coupure");
+        CHECK (filterGain (1000.0, 1000.0, 1.0, OutputFilter::bandPass) > filterGain (1000.0, 1000.0, 0.0, OutputFilter::bandPass), "la resonance devrait accentuer le pic");
+        CHECK (filterGain (1000.0, 1000.0, 0.8, OutputFilter::highPass) > 2.0, "passe-haut : la resonance devrait creer un pic a la coupure");
+    }
+
+    // Passe-bas à 1 kHz, et pente raide (24 dB par octave).
+    {
+        const double low = filterGain (100.0, 1000.0, 0.0, OutputFilter::lowPass);
+        const double high = filterGain (10000.0, 1000.0, 0.0, OutputFilter::lowPass);
+        const double steepLow = filterGain (100.0, 1000.0, 0.0, OutputFilter::highPass, true);
+        const double steepPass = filterGain (8000.0, 1000.0, 0.0, OutputFilter::highPass, true);
+        std::printf ("   passe-bas 1 kHz : 10 kHz -> %.1f dB ; passe-haut 24 dB : 100 Hz -> %.1f dB\n", 20.0 * std::log10 (high), 20.0 * std::log10 (steepLow));
+        CHECK (low > 0.95 && low < 1.05, "le passe-bas touche les graves (%.4f)", low);
+        CHECK (high < 0.02, "le passe-bas ne coupe pas assez les aigus (%.4f)", high);
+        CHECK (steepLow < 0.0005, "la pente 24 dB ne coupe pas assez (%.6f)", steepLow);
+        CHECK (steepPass > 0.9 && steepPass < 1.1, "la pente 24 dB touche la bande passante (%.4f)", steepPass);
+
+        // Le second étage n'ajoute pas de résonance : le pic reste du même ordre.
+        const double peak12 = filterGain (1000.0, 1000.0, 1.0, OutputFilter::highPass);
+        const double peak24 = filterGain (1000.0, 1000.0, 1.0, OutputFilter::highPass, true);
+        CHECK (peak24 < peak12 * 1.05, "24 dB : le pic de resonance ne doit pas grossir (%.2f contre %.2f)", peak24, peak12);
     }
 
     // La courbe dessinée dans l'interface correspond au filtre réel.
-    for (const bool bandPass : { false, true })
-        for (const double f : { 200.0, 700.0, 1000.0, 1800.0 })
+    for (const int type : { (int) OutputFilter::highPass, (int) OutputFilter::bandPass, (int) OutputFilter::lowPass })
+        for (const bool steep : { false, true })
+            for (const double f : { 200.0, 700.0, 1000.0, 1800.0 })
+            {
+                const double q = OutputFilter::qualityFor (0.4);
+                const double measured = filterGain (f, 1000.0, 0.4, type, steep);
+                const double drawn = OutputFilter::magnitudeAt (f, 1000.0, q, type, steep);
+                CHECK (std::abs (measured - drawn) < 0.12 * std::max (drawn, 0.05), "courbe type %d%s a %.0f Hz : mesure %.4f, dessine %.4f",
+                       type, steep ? " (24 dB)" : "", f, measured, drawn);
+            }
+
+    // Limiteur : il plafonne à 0 dBFS, et ne touche à rien en dessous.
+    {
+        const int N = 60000;
+        const auto loud = makeSine (N, 1000.0, 0.5f);
+        const auto quiet = makeSine (N, 1000.0, 0.02f);
+
+        const auto render = [&] (const std::vector<float>& in, bool limit)
         {
-            const double q = OutputFilter::qualityFor (0.4);
-            const double measured = filterGain (f, 1000.0, 0.4, bandPass);
-            const double drawn = OutputFilter::magnitudeAt (f, 1000.0, q, bandPass);
-            CHECK (std::abs (measured - drawn) < 0.12 * std::max (drawn, 0.05), "courbe %s a %.0f Hz : mesure %.3f, dessine %.3f",
-                   bandPass ? "passe-bande" : "passe-haut", f, measured, drawn);
-        }
+            OutputFilter filter;
+            filter.prepare (kSampleRate);
+            filter.setFrequency (1000.0);
+            filter.setResonance (1.0);       // pic d'environ +20 dB à la coupure
+            filter.setLimiter (limit);
+            filter.reset();
+            filter.setActive (true);
+            return runMono (filter, in, 256, [] (int) {});
+        };
+
+        const auto free = render (loud, false), limited = render (loud, true);
+        float freePeak = 0.0f, limitedPeak = 0.0f, limitedLate = 0.0f;
+        for (int i = 0; i < N; ++i) { freePeak = std::max (freePeak, std::abs (free[(size_t) i])); limitedPeak = std::max (limitedPeak, std::abs (limited[(size_t) i])); }
+        for (int i = N / 2; i < N; ++i) limitedLate = std::max (limitedLate, std::abs (limited[(size_t) i]));
+        CHECK (freePeak > 4.0f, "sans limiteur le pic devrait depasser largement 0 dBFS (%.2f)", freePeak);
+        CHECK (limitedPeak <= 1.0001f, "le limiteur laisse passer %.4f", limitedPeak);
+        CHECK (limitedLate > 0.9f, "le limiteur ecrase trop le signal (%.3f)", limitedLate);
+
+        const auto a = render (quiet, false), b = render (quiet, true);
+        bool same = true;
+        for (int i = 0; i < N; ++i) same = same && a[(size_t) i] == b[(size_t) i];
+        CHECK (same, "sous le plafond, le limiteur ne devrait rien changer");
+    }
 
     // Allumage / extinction sans clic (réglage neutre) et balayages rapides : stable.
     {
@@ -766,7 +881,7 @@ static void testFilter()
         filter.setFrequency (20.0);
         const int N = 60000;
         const auto sine = makeSine (N, 220.0, 0.8f);
-        const auto out = runMono (filter, sine, 256, [&] (int start) { filter.setActive (start >= 8192 && start < 40000); filter.setBandPass (false); });
+        const auto out = runMono (filter, sine, 256, [&] (int start) { filter.setActive (start >= 8192 && start < 40000); filter.setType (OutputFilter::highPass); });
         CHECK (maxStep (out, 0, N) < 0.04f, "clic a l'allumage du filtre : %.4f", maxStep (out, 0, N));
 
         bool dry = true;
@@ -786,7 +901,9 @@ static void testFilter()
         {
             if (u (rng) < 0.5) filter.setFrequency (std::pow (10.0, u (rng) * 5.0));   // 1 Hz à 100 kHz : hors plage exprès
             if (u (rng) < 0.3) filter.setResonance (u (rng) * 1.4 - 0.2);
-            if (u (rng) < 0.1) filter.setBandPass (u (rng) < 0.5);
+            if (u (rng) < 0.1) filter.setType ((int) (u (rng) * 3.0));
+            if (u (rng) < 0.1) filter.setSteep (u (rng) < 0.5);
+            if (u (rng) < 0.1) filter.setLimiter (u (rng) < 0.5);
             if (u (rng) < 0.05) filter.setActive (u (rng) < 0.7);
         });
 
@@ -797,9 +914,298 @@ static void testFilter()
     }
 }
 
+// Fait tourner le moteur en mono par blocs ; "onBlock" est appelé avant chaque bloc (réglages, calage).
+template <typename Callback>
+static std::vector<float> runEngine (LooperEngine& engine, const std::vector<float>& in, int blockSize, Callback onBlock)
+{
+    std::vector<float> out = in;
+
+    for (int start = 0; start < (int) in.size(); start += blockSize)
+    {
+        onBlock (start);
+        float* channel[1] = { out.data() + start };
+        engine.process (channel, 1, std::min (blockSize, (int) in.size() - start));
+    }
+
+    return out;
+}
+
+static void testRepeats()
+{
+    std::printf ("13. Repetitions : capture pre, pitch, reverse, decay\n");
+    const int L = 5000, S = 20480, N = 90000;
+    const auto in = makeNoise (N, 40);
+
+    // Capture « pré » : la boucle répète tout de suite la tranche qui vient de jouer, à l'identique.
+    {
+        LooperEngine e;
+        e.prepare (kSampleRate, 1, 8.0);
+        e.setLoopLength ((double) L, false);
+        e.setPreCapture (true);
+        const auto out = runEngine (e, in, 512, [&] (int start) { e.setActive (start >= S); });
+
+        bool before = true, repeats = true;
+        for (int t = 0; t < S; ++t) before = before && out[(size_t) t] == in[(size_t) t];
+
+        for (int t = S + kFade + 2; t < N; ++t)   // la rampe d'entrée (3 ms) terminée
+        {
+            const int p = (t - S) % L;
+            if (p < L - kFade)
+                repeats = repeats && out[(size_t) t] == in[(size_t) (S - L + p)];
+        }
+
+        CHECK (before, "pre : audio modifie avant l'activation");
+        CHECK (repeats, "pre : la boucle devrait repeter la tranche qui precede l'activation");
+        CHECK (out[(size_t) (S + L)] == in[(size_t) (S - L)], "pre : attaque de la tranche adoucie");
+    }
+
+    // Capture « pré » + refresh : à chaque point, on repart sur la tranche qui vient de jouer, à plein niveau.
+    {
+        const int len = 2000, every = 8000;
+        LooperEngine e;
+        e.prepare (kSampleRate, 1, 8.0);
+        e.setLoopLength ((double) len, false);
+        e.setRefresh (true, (double) every, false);
+        e.setPreCapture (true);
+        const auto out = runEngine (e, in, 512, [&] (int start) { e.setActive (start >= S); });
+
+        bool ok = true;
+        for (int j = 1; j <= 6; ++j)
+        {
+            const int point = S + j * every;
+            for (int t = point; t < point + every - kFade - 2; ++t)
+            {
+                const int p = (t - point) % len;
+                if (p < len - kFade)
+                    ok = ok && out[(size_t) t] == in[(size_t) (point - len + p)];
+            }
+        }
+        CHECK (ok, "pre + refresh : chaque refresh devrait reprendre la tranche qui le precede");
+    }
+
+    const int edge = 80;   // fenêtre de raccord des répétitions transposées ou inversées (1,5 ms)
+
+    // Pitch : +12 demi-tons par répétition = lecture deux fois plus rapide, puis quatre fois.
+    {
+        LooperEngine e;
+        e.prepare (kSampleRate, 1, 8.0);
+        e.setLoopLength ((double) L, false);
+        e.setPitch (12.0);
+        const auto out = runEngine (e, in, 512, [&] (int start) { e.setActive (start >= S); });
+
+        bool live = true, doubleSpeed = true, quadSpeed = true;
+        for (int t = S; t < S + L - kFade; ++t) live = live && out[(size_t) t] == in[(size_t) t];
+
+        for (int p = 0; p < L; ++p)
+        {
+            const int inHalf = p % (L / 2), inQuarter = p % (L / 4);
+
+            if (inHalf > edge && inHalf < L / 2 - edge - kFade)
+                doubleSpeed = doubleSpeed && out[(size_t) (S + L + p)] == in[(size_t) (S + (2 * p) % L)];
+
+            if (inQuarter > edge && inQuarter < L / 4 - edge - kFade)
+                quadSpeed = quadSpeed && out[(size_t) (S + 2 * L + p)] == in[(size_t) (S + (4 * p) % L)];
+        }
+
+        CHECK (live, "pitch : le passage en direct ne doit pas etre transpose");
+        CHECK (doubleSpeed, "pitch +12 : la premiere repetition devrait etre lue deux fois plus vite");
+        CHECK (quadSpeed, "pitch +12 : la deuxieme repetition devrait etre lue quatre fois plus vite");
+    }
+
+    // Pitch vers le bas : -12 = deux fois plus lent, les échantillons intermédiaires sont interpolés.
+    {
+        LooperEngine e;
+        e.prepare (kSampleRate, 1, 8.0);
+        e.setLoopLength ((double) L, false);
+        e.setPitch (-12.0);
+        const auto out = runEngine (e, in, 512, [&] (int start) { e.setActive (start >= S); });
+
+        bool exact = true, interpolated = true;
+        for (int p = edge; p < L - edge - kFade; ++p)
+        {
+            const float got = out[(size_t) (S + L + p)];
+            if (p % 2 == 0) exact = exact && got == in[(size_t) (S + p / 2)];
+            else            interpolated = interpolated && std::abs (got - 0.5f * (in[(size_t) (S + p / 2)] + in[(size_t) (S + p / 2 + 1)])) < 1.0e-6f;
+        }
+        CHECK (exact && interpolated, "pitch -12 : la repetition devrait etre lue deux fois plus lentement");
+    }
+
+    // Reverse : chaque répétition relit la tranche à l'envers.
+    {
+        LooperEngine e;
+        e.prepare (kSampleRate, 1, 8.0);
+        e.setLoopLength ((double) L, false);
+        e.setReverse (true);
+        const auto out = runEngine (e, in, 512, [&] (int start) { e.setActive (start >= S); });
+
+        bool ok = true;
+        for (int pass : { 1, 2, 7 })
+            for (int p = edge; p < L - edge - kFade; ++p)
+                ok = ok && out[(size_t) (S + pass * L + p)] == in[(size_t) (S + L - 1 - p)];
+        CHECK (ok, "reverse : la repetition devrait etre la tranche lue a l'envers");
+
+        // En capture « pré », la tranche qui vient de jouer repart à l'envers tout de suite.
+        LooperEngine pre;
+        pre.prepare (kSampleRate, 1, 8.0);
+        pre.setLoopLength ((double) L, false);
+        pre.setReverse (true);
+        pre.setPreCapture (true);
+        const auto grabbed = runEngine (pre, in, 512, [&] (int start) { pre.setActive (start >= S); });
+
+        bool reversed = true;
+        for (int p = kFade + 2; p < L - edge - kFade; ++p)
+            reversed = reversed && grabbed[(size_t) (S + p)] == in[(size_t) (S - 1 - p)];
+        CHECK (reversed, "pre + reverse : la tranche precedente devrait partir a l'envers des l'activation");
+    }
+
+    // Decay : chaque répétition perd la moitié de son niveau.
+    {
+        LooperEngine e;
+        e.prepare (kSampleRate, 1, 8.0);
+        e.setLoopLength ((double) L, false);
+        e.setDecay (0.5);
+        const auto out = runEngine (e, in, 512, [&] (int start) { e.setActive (start >= S); });
+
+        bool ok = true;
+        float gain = 1.0f;
+        for (int pass = 1; pass <= 6; ++pass)
+        {
+            gain *= 0.5f;
+            for (int p = 0; p < L - kFade; ++p)
+                ok = ok && out[(size_t) (S + pass * L + p)] == in[(size_t) (S + p)] * gain;
+        }
+        CHECK (ok, "decay 50 %% : chaque repetition devrait etre deux fois moins forte");
+    }
+
+    // Pas de clic avec pitch, reverse et decay réunis, ni au retour au direct.
+    for (const bool pre : { false, true })
+        for (const double semitones : { 3.0, -5.0, 0.0 })
+        {
+            LooperEngine e;
+            e.prepare (kSampleRate, 1, 8.0);
+            e.setLoopLength (3801.72, false);
+            e.setRefresh (true, 4.0 * 3801.72 * 3.0, false);
+            e.setPitch (semitones);
+            e.setDecay (0.2);
+            e.setPreCapture (pre);
+            const auto sine = makeSine (N, 55.0, 0.8f);
+            const auto out = runEngine (e, sine, 256, [&] (int start)
+            {
+                e.setActive (start >= 8192 && start < 70000);
+                e.setReverse (start >= 30000);          // inversion enclenchée en cours de boucle
+            });
+
+            const float worst = maxStep (out, 0, N);
+            CHECK (worst < 0.05f, "clic (pitch %.0f, pre %d) : %.4f", semitones, (int) pre, worst);
+
+            bool dry = true;
+            for (int t = 71000; t < N; ++t) dry = dry && out[(size_t) t] == sine[(size_t) t];
+            CHECK (dry, "le direct ne revient pas intact apres une boucle transposee");
+        }
+}
+
+static void testSnap()
+{
+    std::printf ("14. Calage du depart sur la grille\n");
+    const int G = 6000, L = 3000, N = 80000;
+    const auto in = makeNoise (N, 41);
+
+    const auto render = [&] (bool pre, int pressAt, int blockSize)
+    {
+        LooperEngine e;
+        e.prepare (kSampleRate, 1, 8.0);
+        e.setLoopLength ((double) L, false);
+        e.setPreCapture (pre);
+        return runEngine (e, in, blockSize, [&, pressAt] (int start)
+        {
+            e.setSnap (true, (double) G, (double) (start % G));
+            e.setActive (start >= pressAt);
+        });
+    };
+
+    // Appui entre deux lignes : le départ attend la ligne suivante (24000), le direct passe d'ici là.
+    {
+        const auto out = render (false, 20480, 512);
+        bool live = true, repeats = true;
+        for (int t = 0; t < 24000 + L - kFade; ++t) live = live && out[(size_t) t] == in[(size_t) t];
+        for (int t = 24000 + L; t < N; ++t)
+        {
+            const int p = (t - 24000) % L;
+            if (p < L - kFade)
+                repeats = repeats && out[(size_t) t] == in[(size_t) (24000 + p)];
+        }
+        CHECK (live, "calage : le direct devrait passer jusqu'a la ligne de grille");
+        CHECK (repeats, "calage : la boucle devrait demarrer pile sur la ligne de grille");
+    }
+
+    // Appui légèrement en retard (500 échantillons après la ligne) : la boucle est ancrée sur la ligne passée.
+    {
+        const auto out = render (false, 24500, 500);
+        bool ok = true;
+        for (int t = 24000; t < N; ++t)
+        {
+            const int p = (t - 24000) % L;
+            if (p < L - kFade)
+                ok = ok && out[(size_t) t] == in[(size_t) (24000 + p)];
+        }
+        CHECK (ok, "calage : un appui en retard devrait etre rattrape sur la ligne qui vient de passer");
+    }
+
+    // Capture « pré » calée : la tranche d'avant la ligne démarre pile dessus, à plein niveau.
+    {
+        const auto out = render (true, 20480, 512);
+        bool live = true, repeats = true;
+        for (int t = 0; t < 24000 - kFade - 2; ++t) live = live && out[(size_t) t] == in[(size_t) t];
+        for (int t = 24000; t < N; ++t)
+        {
+            const int p = (t - 24000) % L;
+            if (p < L - kFade)
+                repeats = repeats && out[(size_t) t] == in[(size_t) (24000 - L + p)];
+        }
+        CHECK (live, "pre calee : le direct devrait passer jusqu'au fondu d'approche");
+        CHECK (repeats, "pre calee : la tranche precedente devrait demarrer pile sur la ligne, a plein niveau");
+    }
+
+    // Capture « pré », appui en retard : on entre dans la tranche là où elle en serait.
+    {
+        const auto out = render (true, 24500, 500);
+        bool ok = true;
+        for (int t = 24500 + kFade + 2; t < N; ++t)
+        {
+            const int p = (t - 24000) % L;
+            if (p < L - kFade)
+                ok = ok && out[(size_t) t] == in[(size_t) (24000 - L + p)];
+        }
+        CHECK (ok, "pre calee : un appui en retard devrait retomber sur la grille");
+    }
+
+    // Sans grille (hôte à l'arrêt), le départ est immédiat ; un départ armé puis annulé ne laisse pas de trace.
+    {
+        LooperEngine e;
+        e.prepare (kSampleRate, 1, 8.0);
+        e.setLoopLength ((double) L, false);
+        const auto out = runEngine (e, in, 512, [&] (int start)
+        {
+            e.setSnap (start < 30000, (double) G, (double) (start % G));
+            e.setActive ((start >= 20480 && start < 22000) || start >= 40960);
+        });
+
+        bool untouched = true, repeats = true;
+        for (int t = 0; t < 40960 + L - kFade; ++t) untouched = untouched && out[(size_t) t] == in[(size_t) t];
+        for (int t = 40960 + L; t < N; ++t)
+        {
+            const int p = (t - 40960) % L;
+            if (p < L - kFade)
+                repeats = repeats && out[(size_t) t] == in[(size_t) (40960 + p)];
+        }
+        CHECK (untouched, "un depart arme puis annule ne devrait rien changer au signal");
+        CHECK (repeats, "sans grille, la boucle devrait demarrer tout de suite");
+    }
+}
+
 static void testFuzz()
 {
-    std::printf ("12. Fuzz : blocs, durees, modes et activations aleatoires (stereo, plusieurs frequences d'echantillonnage)\n");
+    std::printf ("15. Fuzz : blocs, durees, modes et activations aleatoires (stereo, plusieurs frequences d'echantillonnage)\n");
     std::mt19937 rng (1234);
 
     for (double sr : { 22050.0, 44100.0, 48000.0, 96000.0, 192000.0 })
@@ -822,6 +1228,11 @@ static void testFuzz()
             if (u (rng) < 0.30) e.setLoopLength (std::pow (10.0, u (rng) * 6.0 - 0.5), u (rng) < 0.5);
             if (u (rng) < 0.25) e.setRefresh (u (rng) < 0.7, std::pow (10.0, u (rng) * 6.5 - 0.5), u (rng) < 0.5);
             if (u (rng) < 0.20) e.setFades (u (rng) < 0.3 ? 0.0 : u (rng) * 1.2 - 0.1, u (rng) < 0.3 ? 0.0 : u (rng) * 1.2 - 0.1);
+            if (u (rng) < 0.10) e.setPitch (u (rng) < 0.4 ? 0.0 : u (rng) * 60.0 - 30.0);
+            if (u (rng) < 0.10) e.setReverse (u (rng) < 0.5);
+            if (u (rng) < 0.10) e.setDecay (u (rng) < 0.4 ? 0.0 : u (rng) * 1.4 - 0.2);
+            if (u (rng) < 0.10) e.setPreCapture (u (rng) < 0.5);
+            if (u (rng) < 0.30) { const double grid = std::pow (10.0, u (rng) * 5.0); e.setSnap (u (rng) < 0.6, grid, u (rng) * grid * 1.2); }
             if (u (rng) < 0.002) e.reset();
 
             float* io[2] = { l.data(), r.data() };
@@ -849,6 +1260,8 @@ int main()
     testFades();
     testStutter();
     testFilter();
+    testRepeats();
+    testSnap();
     testFuzz();
 
     std::printf (failures == 0 ? "\nTOUS LES TESTS PASSENT\n" : "\n%d ECHEC(S)\n", failures);

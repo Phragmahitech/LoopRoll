@@ -32,6 +32,26 @@ public:
     static constexpr const char* filterCutoffId    = "filterCutoff";
     static constexpr const char* filterResonanceId = "filterResonance";
 
+    // Depuis la v1.1
+    static constexpr const char* divisionFeelId    = "divisionFeel";
+    static constexpr const char* refreshFeelId     = "refreshFeel";
+    static constexpr const char* stutterFeelId     = "stutterFeel";
+    static constexpr const char* pitchId           = "pitch";
+    static constexpr const char* reverseId         = "reverse";
+    static constexpr const char* preId             = "pre";
+    static constexpr const char* decayId           = "decay";
+    static constexpr const char* snapId            = "snap";
+    static constexpr const char* momentaryId       = "momentary";
+    static constexpr const char* mixId             = "mix";
+    static constexpr const char* stutterDepthId    = "stutterDepth";
+    static constexpr const char* stutterSwingId    = "stutterSwing";
+    static constexpr const char* filterSlopeId     = "filterSlope";
+    static constexpr const char* limiterId         = "limiter";
+
+    /** Identifiant d'un pas du motif du stutter : "stutterStep1" à "stutterStep16". */
+    static juce::String getStepId (int index)       { return "stutterStep" + juce::String (index + 1); }
+    static constexpr int numStutterSteps = StutterGate::numSteps;
+
     // Plages du mode free (ms)
     static constexpr float minTimeMs = 10.0f;
     static constexpr float maxTimeMs = 4000.0f;
@@ -41,9 +61,12 @@ public:
     static constexpr float maxStutterMs = 1000.0f;
 
     // Les potards de durée vont du plus long (à gauche) au plus court (à droite).
-    // Chaque module (boucle, refresh, stutter) a son propre mode FREE / SYNC.
+    // Chaque module (boucle, refresh, stutter) a son propre mode FREE / SYNC,
+    // et en SYNC sa propre variante : normale, triolet (x 2/3) ou pointée (x 3/2).
+    static const juce::StringArray& getFeelNames();
+    static double getFeelFactor (int index);
 
-    /** Divisions de la boucle en mode sync, de la plus longue à la plus courte. */
+    /** Divisions de la boucle et du stutter en mode sync, de la plus longue à la plus courte. */
     static const juce::StringArray& getDivisionNames();
     /** Durée d'une division en noires (1/4 = 1). */
     static double getDivisionInBeats (int index);
@@ -69,7 +92,7 @@ public:
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override                         { return true; }
 
-    const juce::String getName() const override             { return "Fragment"; }
+    const juce::String getName() const override             { return "Phragments"; }
     bool acceptsMidi() const override                       { return false; }
     bool producesMidi() const override                      { return false; }
     bool isMidiEffect() const override                      { return false; }
@@ -89,7 +112,7 @@ public:
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
-    // Chaîne : [stutter et looper, dans l'ordre choisi] puis filtre.
+    // Chaîne : [stutter et looper, dans l'ordre choisi], filtre (et son limiteur), puis mélange dry / wet.
     LooperEngine engine;
     StutterGate gate;
     OutputFilter filter;
@@ -114,12 +137,30 @@ private:
     std::atomic<float>* filterTypeParam = nullptr;
     std::atomic<float>* filterCutoffParam = nullptr;
     std::atomic<float>* filterResonanceParam = nullptr;
+    std::atomic<float>* divisionFeelParam = nullptr;
+    std::atomic<float>* refreshFeelParam = nullptr;
+    std::atomic<float>* stutterFeelParam = nullptr;
+    std::atomic<float>* pitchParam = nullptr;
+    std::atomic<float>* reverseParam = nullptr;
+    std::atomic<float>* preParam = nullptr;
+    std::atomic<float>* decayParam = nullptr;
+    std::atomic<float>* snapParam = nullptr;
+    std::atomic<float>* mixParam = nullptr;
+    std::atomic<float>* stutterDepthParam = nullptr;
+    std::atomic<float>* stutterSwingParam = nullptr;
+    std::atomic<float>* filterSlopeParam = nullptr;
+    std::atomic<float>* limiterParam = nullptr;
+    std::atomic<float>* stepParams[numStutterSteps] = {};
 
     double currentSampleRate = 44100.0;
     double lastBpm = 120.0;
-    int lastDivision = -1;
-    int lastRefreshDivision = -1;
+    int lastDivision = -1, lastDivisionFeel = -1;
+    int lastRefreshDivision = -1, lastRefreshFeel = -1;
     bool lastLoopSync = false, lastRefreshSync = false;
+
+    // Dry / wet : copie de l'entrée et mélange lissé
+    juce::AudioBuffer<float> dryBuffer;
+    float mixNow = 1.0f, mixSmoothing = 1.0f;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LoopRollAudioProcessor)
 };

@@ -92,6 +92,11 @@ namespace
                                                                 .withValueFromStringFunction ([] (const juce::String& text) { return text.retainCharacters ("0123456789.,").replaceCharacter (',', '.').getFloatValue(); }));
     }
 
+    std::unique_ptr<juce::AudioParameterBool> makeSwitch (const juce::String& id, const juce::String& name, bool defaultValue)
+    {
+        return std::make_unique<juce::AudioParameterBool> (juce::ParameterID { id, 1 }, name, defaultValue);
+    }
+
     std::unique_ptr<juce::AudioParameterFloat> makeTimeParameter (const char* id, const char* name,
                                                                   float shortestMs, float longestMs, float defaultMs)
     {
@@ -106,14 +111,26 @@ namespace
 //==============================================================================
 const juce::StringArray& LoopRollAudioProcessor::getDivisionNames()
 {
-    static const juce::StringArray names { "1/1", "1/2", "1/4", "1/8", "1/16", "1/32", "1/64" };
+    static const juce::StringArray names { "1/1", "1/2", "1/4", "1/8", "1/16", "1/32", "1/64", "1/128" };
     return names;
 }
 
 double LoopRollAudioProcessor::getDivisionInBeats (int index)
 {
-    static constexpr double beats[] = { 4.0, 2.0, 1.0, 0.5, 0.25, 0.125, 0.0625 };
+    static constexpr double beats[] = { 4.0, 2.0, 1.0, 0.5, 0.25, 0.125, 0.0625, 0.03125 };
     return beats[juce::jlimit (0, (int) std::size (beats) - 1, index)];
+}
+
+const juce::StringArray& LoopRollAudioProcessor::getFeelNames()
+{
+    static const juce::StringArray names { "Straight", "Triplet", "Dotted" };
+    return names;
+}
+
+double LoopRollAudioProcessor::getFeelFactor (int index)
+{
+    static constexpr double factors[] = { 1.0, 2.0 / 3.0, 1.5 };
+    return factors[juce::jlimit (0, (int) std::size (factors) - 1, index)];
 }
 
 const juce::StringArray& LoopRollAudioProcessor::getRefreshDivisionNames()
@@ -169,13 +186,44 @@ juce::AudioProcessorValueTreeState::ParameterLayout LoopRollAudioProcessor::crea
 
     layout.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { filterId, 1 }, "Filter", false));
     layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { filterTypeId, 1 }, "Filter Type",
-                                                              juce::StringArray { "High Pass", "Band Pass" }, 0));
+                                                              juce::StringArray { "High Pass", "Band Pass", "Low Pass" }, 0));
     layout.add (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { filterCutoffId, 1 }, "Filter Cutoff",
                                                              makeFrequencyRange(), 20.0f,
                                                              juce::AudioParameterFloatAttributes()
                                                                  .withStringFromValueFunction (frequencyToText)
                                                                  .withValueFromStringFunction (textToFrequency)));
     layout.add (makePercentParameter (filterResonanceId, "Filter Resonance", 20.0f));
+
+    // Depuis la v1.1. Les nouveaux réglages sont ajoutés à la fin : l'ordre des anciens ne bouge pas.
+    layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { divisionFeelId, 1 }, "Loop Feel", getFeelNames(), 0));
+    layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { refreshFeelId, 1 }, "Refresh Feel", getFeelNames(), 0));
+    layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { stutterFeelId, 1 }, "Stutter Feel", getFeelNames(), 0));
+
+    layout.add (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { pitchId, 1 }, "Loop Pitch",
+                                                             juce::NormalisableRange<float> (-12.0f, 12.0f, 1.0f), 0.0f,
+                                                             juce::AudioParameterFloatAttributes()
+                                                                 .withStringFromValueFunction ([] (float value, int)
+                                                                 {
+                                                                     const int semitones = juce::roundToInt (value);
+                                                                     return (semitones > 0 ? "+" : "") + juce::String (semitones) + " st";
+                                                                 })
+                                                                 .withValueFromStringFunction ([] (const juce::String& text) { return text.retainCharacters ("-0123456789.,").replaceCharacter (',', '.').getFloatValue(); })));
+    layout.add (makeSwitch (reverseId, "Loop Reverse", false));
+    layout.add (makeSwitch (preId, "Loop Pre Capture", false));
+    layout.add (makePercentParameter (decayId, "Loop Decay", 0.0f));
+    layout.add (makeSwitch (snapId, "Loop Snap", false));
+    layout.add (makeSwitch (momentaryId, "Loop Momentary", false));
+    layout.add (makePercentParameter (mixId, "Mix", 100.0f));
+
+    layout.add (makePercentParameter (stutterDepthId, "Stutter Depth", 100.0f));
+    layout.add (makePercentParameter (stutterSwingId, "Stutter Swing", 0.0f));
+
+    for (int i = 0; i < numStutterSteps; ++i)
+        layout.add (makeSwitch (getStepId (i), "Stutter Step " + juce::String (i + 1), true));
+
+    layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { filterSlopeId, 1 }, "Filter Slope",
+                                                              juce::StringArray { "12 dB", "24 dB" }, 0));
+    layout.add (makeSwitch (limiterId, "Limiter", true));
 
     return layout;
 }
@@ -206,6 +254,22 @@ LoopRollAudioProcessor::LoopRollAudioProcessor()
     filterTypeParam      = apvts.getRawParameterValue (filterTypeId);
     filterCutoffParam    = apvts.getRawParameterValue (filterCutoffId);
     filterResonanceParam = apvts.getRawParameterValue (filterResonanceId);
+    divisionFeelParam    = apvts.getRawParameterValue (divisionFeelId);
+    refreshFeelParam     = apvts.getRawParameterValue (refreshFeelId);
+    stutterFeelParam     = apvts.getRawParameterValue (stutterFeelId);
+    pitchParam           = apvts.getRawParameterValue (pitchId);
+    reverseParam         = apvts.getRawParameterValue (reverseId);
+    preParam             = apvts.getRawParameterValue (preId);
+    decayParam           = apvts.getRawParameterValue (decayId);
+    snapParam            = apvts.getRawParameterValue (snapId);
+    mixParam             = apvts.getRawParameterValue (mixId);
+    stutterDepthParam    = apvts.getRawParameterValue (stutterDepthId);
+    stutterSwingParam    = apvts.getRawParameterValue (stutterSwingId);
+    filterSlopeParam     = apvts.getRawParameterValue (filterSlopeId);
+    limiterParam         = apvts.getRawParameterValue (limiterId);
+
+    for (int i = 0; i < numStutterSteps; ++i)
+        stepParams[i] = apvts.getRawParameterValue (getStepId (i));
 }
 
 bool LoopRollAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -216,7 +280,7 @@ bool LoopRollAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts)
         && layouts.getMainInputChannelSet() == out;
 }
 
-void LoopRollAudioProcessor::prepareToPlay (double sampleRate, int)
+void LoopRollAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     currentSampleRate = sampleRate > 0.0 ? sampleRate : 44100.0;
     engine.prepare (currentSampleRate, juce::jmax (1, getTotalNumOutputChannels()), maxLoopSeconds);
@@ -224,6 +288,12 @@ void LoopRollAudioProcessor::prepareToPlay (double sampleRate, int)
     filter.prepare (currentSampleRate);
     lastDivision = -1;
     lastRefreshDivision = -1;
+    lastDivisionFeel = -1;
+    lastRefreshFeel = -1;
+
+    dryBuffer.setSize (juce::jmax (1, getTotalNumOutputChannels()), juce::jmax (4096, samplesPerBlock), false, true, false);
+    mixSmoothing = (float) (1.0 - std::exp (-1.0 / (0.01 * currentSampleRate)));   // ~10 ms
+    mixNow = 0.01f * mixParam->load (std::memory_order_relaxed);
 }
 
 void LoopRollAudioProcessor::reset()
@@ -265,66 +335,114 @@ void LoopRollAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
     }
 
     const auto value = [] (const std::atomic<float>* parameter) { return parameter->load (std::memory_order_relaxed); };
+    const auto isOn = [&value] (const std::atomic<float>* parameter) { return value (parameter) > 0.5f; };
     const double samplesPerBeat = 60.0 / lastBpm * currentSampleRate;
     const double samplesPerMs = 0.001 * currentSampleRate;
 
+    // --- Dry / wet : on garde l'entrée de côté tant que le mélange n'est pas à 100 % ---
+    const int numChannels = juce::jmin (numIn, numOut, buffer.getNumChannels());
+    const float mixTarget = juce::jlimit (0.0f, 1.0f, 0.01f * value (mixParam));
+    const bool mixing = mixTarget < 1.0f || mixNow < 1.0f;
+
+    if (mixing)
+    {
+        dryBuffer.setSize (juce::jmax (dryBuffer.getNumChannels(), numChannels), juce::jmax (dryBuffer.getNumSamples(), numSamples), true, false, true);
+
+        for (int ch = 0; ch < numChannels; ++ch)
+            dryBuffer.copyFrom (ch, 0, buffer, ch, 0, numSamples);
+    }
+
     // --- Boucle ---
-    const bool loopSync = value (modeParam) > 0.5f;
+    const bool loopSync = isOn (modeParam);
     const int division = juce::roundToInt (value (divisionParam));
+    const int divisionFeel = juce::roundToInt (value (divisionFeelParam));
 
     // Changement de division (ou passage en sync) : on recale sur la grille de départ.
     // Une simple variation de tempo, elle, ne provoque pas de saut.
     if (loopSync)
-        engine.setLoopLength (getDivisionInBeats (division) * samplesPerBeat, division != lastDivision || ! lastLoopSync);
+        engine.setLoopLength (getDivisionInBeats (division) * getFeelFactor (divisionFeel) * samplesPerBeat,
+                              division != lastDivision || divisionFeel != lastDivisionFeel || ! lastLoopSync);
     else
         engine.setLoopLength ((double) value (timeParam) * samplesPerMs, false);
 
     // --- Refresh ---
-    const bool refresh = value (refreshParam) > 0.5f;
-    const bool refreshSync = value (refreshModeParam) > 0.5f;
+    const bool refresh = isOn (refreshParam);
+    const bool refreshSync = isOn (refreshModeParam);
     const int refreshDivision = juce::roundToInt (value (refreshDivisionParam));
+    const int refreshFeel = juce::roundToInt (value (refreshFeelParam));
 
     if (refreshSync)
-        engine.setRefresh (refresh, getRefreshDivisionInBeats (refreshDivision) * samplesPerBeat,
-                           refreshDivision != lastRefreshDivision || ! lastRefreshSync);
+        engine.setRefresh (refresh, getRefreshDivisionInBeats (refreshDivision) * getFeelFactor (refreshFeel) * samplesPerBeat,
+                           refreshDivision != lastRefreshDivision || refreshFeel != lastRefreshFeel || ! lastRefreshSync);
     else
         engine.setRefresh (refresh, (double) value (refreshTimeParam) * samplesPerMs, false);
 
     lastLoopSync = loopSync;
     lastRefreshSync = refreshSync;
     lastDivision = division;
+    lastDivisionFeel = divisionFeel;
     lastRefreshDivision = refreshDivision;
+    lastRefreshFeel = refreshFeel;
 
     engine.setFades (0.01 * (double) value (fadeInParam), 0.01 * (double) value (fadeOutParam));
-    engine.setActive (value (loopParam) > 0.5f);
+    engine.setPitch ((double) value (pitchParam));
+    engine.setReverse (isOn (reverseParam));
+    engine.setDecay (0.01 * (double) value (decayParam));
+    engine.setPreCapture (isOn (preParam));
+
+    // Calage du départ : sur la division de la boucle (jamais plus fin que la double croche,
+    // et sans triolet ni pointé), ou sur la double croche en mode free.
+    if (isOn (snapParam) && hostIsMoving)
+    {
+        const double gridBeats = loopSync ? juce::jmax (0.25, getDivisionInBeats (division)) : 0.25;
+        const double position = hostBeats / gridBeats;
+        engine.setSnap (true, gridBeats * samplesPerBeat, (position - std::floor (position)) * gridBeats * samplesPerBeat);
+    }
+    else
+    {
+        engine.setSnap (false, 0.0, 0.0);
+    }
+
+    engine.setActive (isOn (loopParam));
 
     // --- Stutter ---
-    if (value (stutterModeParam) > 0.5f)
+    if (isOn (stutterModeParam))
     {
-        const double stepInBeats = getDivisionInBeats (juce::roundToInt (value (stutterDivisionParam)));
+        const double stepInBeats = getDivisionInBeats (juce::roundToInt (value (stutterDivisionParam)))
+                                     * getFeelFactor (juce::roundToInt (value (stutterFeelParam)));
         gate.setStepLength (stepInBeats * samplesPerBeat);
 
-        // Quand le transport défile, les pas du gate tombent sur la grille de l'hôte.
+        // Quand le transport défile, les pas du gate (et son motif) tombent sur la grille de l'hôte.
         if (hostIsMoving)
-            gate.syncPhase (hostBeats / stepInBeats);
+            gate.syncPosition (hostBeats / stepInBeats);
     }
     else
     {
         gate.setStepLength ((double) value (stutterTimeParam) * samplesPerMs);
     }
 
+    unsigned int pattern = 0;
+
+    for (int i = 0; i < numStutterSteps; ++i)
+        if (isOn (stepParams[i]))
+            pattern |= 1u << i;
+
+    gate.setPattern (pattern);
     gate.setShape (0.01 * (double) value (stutterShapeParam));
-    gate.setActive (value (stutterParam) > 0.5f);
+    gate.setDepth (0.01 * (double) value (stutterDepthParam));
+    gate.setSwing (0.01 * (double) value (stutterSwingParam));
+    gate.setActive (isOn (stutterParam));
 
     // --- Filtre ---
     filter.setFrequency ((double) value (filterCutoffParam));
     filter.setResonance (0.01 * (double) value (filterResonanceParam));
-    filter.setBandPass (value (filterTypeParam) > 0.5f);
-    filter.setActive (value (filterParam) > 0.5f);
+    filter.setType (juce::roundToInt (value (filterTypeParam)));
+    filter.setSteep (isOn (filterSlopeParam));
+    filter.setLimiter (isOn (limiterParam));
+    filter.setActive (isOn (filterParam));
 
     // --- Chaîne : stutter et looper dans l'ordre choisi, puis filtre ---
     const auto channels = buffer.getArrayOfWritePointers();
-    const int numChannels = juce::jmin (numIn, numOut, buffer.getNumChannels());
 
     if (value (orderParam) < 0.5f)
     {
@@ -338,6 +456,22 @@ void LoopRollAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
     }
 
     filter.process (channels, numChannels, numSamples);
+
+    // --- Mélange avec l'entrée ---
+    if (mixing)
+    {
+        for (int n = 0; n < numSamples; ++n)
+        {
+            const float delta = mixTarget - mixNow;
+            mixNow = std::abs (delta) < 1.0e-4f ? mixTarget : mixNow + delta * mixSmoothing;
+
+            for (int ch = 0; ch < numChannels; ++ch)
+            {
+                const float dry = dryBuffer.getSample (ch, n);
+                channels[ch][n] = dry + mixNow * (channels[ch][n] - dry);
+            }
+        }
+    }
 }
 
 void LoopRollAudioProcessor::processBlockBypassed (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)

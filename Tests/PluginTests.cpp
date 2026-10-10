@@ -2,6 +2,7 @@
 // Usage : LoopRollPluginTests [dossier où écrire les captures de l'interface]
 
 #include "../Source/PluginProcessor.h"
+#include "../Source/PluginEditor.h"
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
@@ -459,12 +460,19 @@ static void testFilter()
         setParam (*p, Ids::filterId, 1.0f);
         setParam (*p, Ids::filterCutoffId, 1000.0f);
         setParam (*p, Ids::filterResonanceId, 100.0f);
+        setParam (*p, Ids::limiterId, 0.0f);
 
         const auto in = sine (1000.0);
         juce::AudioBuffer<float> out;
         process (*p, in, out, blockSize, [] (int) {});
         const double gain = level (out) / level (in);
         check (gain > 9.0 && gain < 11.0, "resonance a fond : pic de " + juce::String (gain, 2) + " au lieu de 10");
+
+        // Avec le limiteur (allumé par défaut), la sortie ne dépasse jamais 0 dBFS.
+        setParam (*p, Ids::limiterId, 1.0f);
+        process (*p, in, out, blockSize, [] (int) {});
+        const float limitedPeak = out.getMagnitude (0, total / 2, total / 2);
+        check (limitedPeak <= 1.0001f && limitedPeak > 0.9f, "limiteur : crete a " + juce::String (limitedPeak, 4));
 
         setParam (*p, Ids::filterId, 0.0f);
         process (*p, in, out, blockSize, [] (int) {});
@@ -492,10 +500,191 @@ static void testFilter()
         setParam (*q, Ids::filterId, 1.0f);
         setParam (*q, Ids::filterCutoffId, 6000.0f);
         setParam (*q, Ids::filterResonanceId, 0.0f);
+        setParam (*q, Ids::limiterId, 0.0f);   // bruit à pleine échelle : le limiteur fausserait la mesure
         render (*q, in, filtered, blockSize, [] (int) {});
 
         const double gain = level (filtered) / level (looped);
         check (gain > 0.82 && gain < 0.90, "filtre sur la boucle : gain " + juce::String (gain, 3) + " au lieu de 0.86");
+    }
+}
+
+static void testVersion11()
+{
+    std::cout << "- v1.1 : triolets, pitch, pre, calage, mix, motif, passe-bas" << std::endl;
+
+    const double sampleRate = 48000.0;
+    const int blockSize = 256, total = 144000, start = blockSize * 20;   // 120 BPM : une noire = 24000 échantillons
+    using Ids = LoopRollAudioProcessor;
+
+    juce::AudioBuffer<float> in (2, total), out;
+    const auto ratio = [&] (int index) { return out.getSample (0, index) / in.getSample (0, index); };
+
+    // Triolet : 1/8 en triolet à 120 BPM = 8000 échantillons ; pointée = 18000 ; 1/128 = 750.
+    struct Division { float index; float feel; int expected; };
+
+    for (const auto d : { Division { 3.0f, 1.0f, 8000 }, Division { 3.0f, 2.0f, 18000 }, Division { 7.0f, 0.0f, 750 } })
+    {
+        auto p = makePlugin (sampleRate, blockSize);
+        FixedTempoPlayHead playHead;
+        p->setPlayHead (&playHead);
+        setParam (*p, Ids::divisionId, d.index);
+        setParam (*p, Ids::divisionFeelId, d.feel);
+
+        render (*p, in, out, blockSize, [&] (int position) { if (position == start) setParam (*p, Ids::loopId, 1.0f); });
+
+        for (int repeat : { 1, 3 })
+            check (findRepeatOffset (in, out, start, start + repeat * d.expected) == 0,
+                   "division " + juce::String (d.index) + " variante " + juce::String (d.feel) + " : repetition " + juce::String (repeat) + " hors grille");
+
+        p->setPlayHead (nullptr);
+    }
+
+    // Pitch et reverse arrivent bien au moteur : +12 = deux fois plus vite, reverse = à l'envers.
+    {
+        auto p = makePlugin (sampleRate, blockSize);
+        setParam (*p, Ids::modeId, 0.0f);
+        setParam (*p, Ids::timeId, 100.0f);   // 4800 échantillons
+        setParam (*p, Ids::pitchId, 12.0f);
+        render (*p, in, out, blockSize, [&] (int position) { if (position == start) setParam (*p, Ids::loopId, 1.0f); });
+
+        bool fast = true;
+        for (int i = 200; i < 2000; ++i)
+            fast = fast && juce::exactlyEqual (out.getSample (1, start + 4800 + i), in.getSample (1, start + 2 * i));
+        check (fast, "pitch +12 : la repetition n'est pas lue deux fois plus vite");
+
+        auto q = makePlugin (sampleRate, blockSize);
+        setParam (*q, Ids::modeId, 0.0f);
+        setParam (*q, Ids::timeId, 100.0f);
+        setParam (*q, Ids::reverseId, 1.0f);
+        setParam (*q, Ids::decayId, 50.0f);
+        render (*q, in, out, blockSize, [&] (int position) { if (position == start) setParam (*q, Ids::loopId, 1.0f); });
+
+        bool backwards = true;
+        for (int i = 200; i < 4400; ++i)
+            backwards = backwards && juce::exactlyEqual (out.getSample (0, start + 4800 + i), in.getSample (0, start + 4799 - i) * 0.5f);
+        check (backwards, "reverse + decay 50 % : la repetition devrait etre a l'envers et deux fois moins forte");
+    }
+
+    // Capture « pré » : la tranche qui précède l'activation repart tout de suite.
+    {
+        auto p = makePlugin (sampleRate, blockSize);
+        setParam (*p, Ids::modeId, 0.0f);
+        setParam (*p, Ids::timeId, 100.0f);
+        setParam (*p, Ids::preId, 1.0f);
+        render (*p, in, out, blockSize, [&] (int position) { if (position == start) setParam (*p, Ids::loopId, 1.0f); });
+
+        check (findRepeatOffset (in, out, start - 4800, start + 4800) == 0, "pre : la boucle ne repete pas la tranche precedente");
+
+        bool immediate = true;
+        for (int i = 400; i < 4000; ++i)
+            immediate = immediate && juce::exactlyEqual (out.getSample (0, start + i), in.getSample (0, start - 4800 + i));
+        check (immediate, "pre : la repetition devrait commencer des l'activation");
+    }
+
+    // Calage : boucle d'une noire, appui entre deux temps -> départ sur le temps suivant (24000).
+    for (const bool pre : { false, true })
+    {
+        auto p = makePlugin (sampleRate, blockSize);
+        FixedTempoPlayHead playHead;
+        playHead.bpm = 120.0;
+        p->setPlayHead (&playHead);
+        setParam (*p, Ids::divisionId, 2.0f);   // 1/4
+        setParam (*p, Ids::snapId, 1.0f);
+        setParam (*p, Ids::preId, pre ? 1.0f : 0.0f);
+
+        render (*p, in, out, blockSize, [&] (int position)
+        {
+            playHead.beats = position / 24000.0;
+            if (position == start) setParam (*p, Ids::loopId, 1.0f);
+        });
+
+        bool liveUntilTheBeat = true;
+        for (int i = 0; i < 24000 - 200; ++i)
+            liveUntilTheBeat = liveUntilTheBeat && juce::exactlyEqual (out.getSample (0, i), in.getSample (0, i));
+        check (liveUntilTheBeat, "calage : le direct devrait passer jusqu'au temps suivant");
+
+        const int source = pre ? 0 : 24000;   // en pré : la noire d'avant
+        check (findRepeatOffset (in, out, source, 48000) == 0, juce::String ("calage") + (pre ? " + pre" : "") + " : la boucle ne demarre pas sur le temps");
+        check (findRepeatOffset (in, out, source, 96000) == 0, juce::String ("calage") + (pre ? " + pre" : "") + " : derive apres trois passages");
+
+        p->setPlayHead (nullptr);
+    }
+
+    // Mix : à 0 % le son d'entrée ressort intact, à 50 % on entend la moitié de chaque.
+    {
+        auto p = makePlugin (sampleRate, blockSize);
+        setParam (*p, Ids::modeId, 0.0f);
+        setParam (*p, Ids::timeId, 100.0f);
+        setParam (*p, Ids::mixId, 50.0f);
+        render (*p, in, out, blockSize, [&] (int position) { if (position == start) setParam (*p, Ids::loopId, 1.0f); });
+
+        bool half = true;
+        for (int i = 100; i < 4000; ++i)
+        {
+            const int index = start + 5 * 4800 + i;
+            half = half && std::abs (out.getSample (0, index) - 0.5f * (in.getSample (0, index) + in.getSample (0, start + i))) < 1.0e-5f;
+        }
+        check (half, "mix 50 % : la sortie devrait etre la moyenne du direct et de la boucle");
+
+        setParam (*p, Ids::mixId, 0.0f);
+        render (*p, in, out, blockSize, [] (int) {});
+        bool dry = true;
+        for (int i = total / 2; i < total; ++i)
+            dry = dry && juce::exactlyEqual (out.getSample (1, i), in.getSample (1, i));
+        check (dry, "mix 0 % : la sortie devrait etre l'entree intacte");
+    }
+
+    // Motif et profondeur du stutter : pas de 100 ms, le deuxième pas éteint, profondeur 50 %.
+    {
+        auto p = makePlugin (sampleRate, blockSize);
+        setParam (*p, Ids::stutterModeId, 0.0f);
+        setParam (*p, Ids::stutterTimeId, 100.0f);
+        setParam (*p, Ids::getStepId (1).toRawUTF8(), 0.0f);
+        render (*p, in, out, blockSize, [&] (int position) { if (position == start) setParam (*p, Ids::stutterId, 1.0f); });
+
+        check (std::abs (ratio (start + 16 * 4800 + 2400) - 0.5f) < 0.01f, "motif : le pas 1 devrait jouer (" + juce::String (ratio (start + 16 * 4800 + 2400), 3) + ")");
+        check (std::abs (ratio (start + 17 * 4800 + 2400)) < 0.001f, "motif : le pas 2 devrait etre ferme (" + juce::String (ratio (start + 17 * 4800 + 2400), 3) + ")");
+        check (std::abs (ratio (start + 18 * 4800 + 2400) - 0.5f) < 0.01f, "motif : le pas 3 devrait jouer");
+
+        setParam (*p, Ids::stutterId, 0.0f);
+        setParam (*p, Ids::stutterDepthId, 50.0f);
+        render (*p, in, out, blockSize, [&] (int position) { setParam (*p, Ids::stutterId, position >= start ? 1.0f : 0.0f); });
+        check (std::abs (ratio (start + 16 * 4800 + 2400) - 0.75f) < 0.01f, "profondeur 50 % : mi-pas a " + juce::String (ratio (start + 16 * 4800 + 2400), 3));
+        check (std::abs (ratio (start + 17 * 4800 + 2400) - 0.5f) < 0.01f, "profondeur 50 % : pas eteint a " + juce::String (ratio (start + 17 * 4800 + 2400), 3));
+    }
+
+    // Filtre : passe-bas, et pente 24 dB.
+    {
+        const auto sine = [&] (double frequency)
+        {
+            juce::AudioBuffer<float> buffer (2, total);
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < total; ++i)
+                    buffer.setSample (ch, i, 0.5f * (float) std::sin (juce::MathConstants<double>::twoPi * frequency * i / sampleRate));
+            return buffer;
+        };
+
+        struct Case { float type, slope; double frequency, minimum, maximum; const char* name; };
+
+        for (const auto test : { Case { 2.0f, 0.0f, 100.0, 0.95, 1.05, "passe-bas 1 kHz, sinus 100 Hz" },
+                                 Case { 2.0f, 0.0f, 8000.0, 0.005, 0.03, "passe-bas 1 kHz, sinus 8 kHz" },
+                                 Case { 0.0f, 1.0f, 250.0, 0.002, 0.006, "passe-haut 24 dB, sinus 250 Hz (-48 dB)" },
+                                 Case { 2.0f, 1.0f, 4000.0, 0.002, 0.006, "passe-bas 24 dB, sinus 4 kHz (-48 dB)" } })
+        {
+            auto p = makePlugin (sampleRate, blockSize);
+            setParam (*p, Ids::filterId, 1.0f);
+            setParam (*p, Ids::filterTypeId, test.type);
+            setParam (*p, Ids::filterSlopeId, test.slope);
+            setParam (*p, Ids::filterCutoffId, 1000.0f);
+            setParam (*p, Ids::filterResonanceId, 0.0f);
+
+            const auto tone = sine (test.frequency);
+            juce::AudioBuffer<float> filtered;
+            process (*p, tone, filtered, blockSize, [] (int) {});
+
+            const double gain = (double) filtered.getRMSLevel (1, total / 2, total / 2) / (double) tone.getRMSLevel (1, total / 2, total / 2);
+            check (gain > test.minimum && gain < test.maximum, juce::String (test.name) + " : gain " + juce::String (gain, 5));
+        }
     }
 }
 
@@ -506,8 +695,8 @@ static void testParametersAndState()
     std::unique_ptr<juce::AudioProcessor> a (createPluginFilter());
     auto& apvts = dynamic_cast<LoopRollAudioProcessor&> (*a).apvts;
 
-    // Le plugin s'appelle Fragment depuis la v1.0 ; l'étiquette de ses états sauvegardés garde l'ancien nom (compatibilité).
-    check (a->getName() == "Fragment", "nom du plugin : " + a->getName());
+    // Le nom du plugin a changé (LoopRoll, Fragment, Phragments) ; l'étiquette de ses états sauvegardés garde le premier (compatibilité).
+    check (a->getName() == "Phragments", "nom du plugin : " + a->getName());
     check (apvts.state.getType().toString() == "LoopRoll", "etiquette d'etat : " + apvts.state.getType().toString());
 
     auto* time = apvts.getParameter (LoopRollAudioProcessor::timeId);
@@ -525,8 +714,8 @@ static void testParametersAndState()
     check (time->getText (time->convertTo0to1 (12.5f), 64) == "12.5 ms", "texte 12.5 ms : " + time->getText (time->convertTo0to1 (12.5f), 64));
 
     auto* division = apvts.getParameter (LoopRollAudioProcessor::divisionId);
-    check (division->getText (0.0f, 64) == "1/1" && division->getText (1.0f, 64) == "1/64", "sens du potard de division");
-    check (LoopRollAudioProcessor::getDivisionNames().size() == 7 && LoopRollAudioProcessor::getRefreshDivisionNames().size() == 8, "listes de divisions");
+    check (division->getText (0.0f, 64) == "1/1" && division->getText (1.0f, 64) == "1/128", "sens du potard de division");
+    check (LoopRollAudioProcessor::getDivisionNames().size() == 8 && LoopRollAudioProcessor::getRefreshDivisionNames().size() == 8, "listes de divisions");
     check (juce::approximatelyEqual (LoopRollAudioProcessor::getDivisionInBeats (4), 0.25), "1/16 = 0.25 noire");
     check (juce::approximatelyEqual (LoopRollAudioProcessor::getRefreshDivisionInBeats (0), 16.0), "4/1 = 16 noires");
 
@@ -580,6 +769,20 @@ static void testParametersAndState()
     setParam (*a, LoopRollAudioProcessor::filterTypeId, 1.0f);
     setParam (*a, LoopRollAudioProcessor::filterCutoffId, 2500.0f);
     setParam (*a, LoopRollAudioProcessor::filterResonanceId, 64.0f);
+    setParam (*a, LoopRollAudioProcessor::divisionFeelId, 1.0f);
+    setParam (*a, LoopRollAudioProcessor::stutterFeelId, 2.0f);
+    setParam (*a, LoopRollAudioProcessor::pitchId, -7.0f);
+    setParam (*a, LoopRollAudioProcessor::reverseId, 1.0f);
+    setParam (*a, LoopRollAudioProcessor::preId, 1.0f);
+    setParam (*a, LoopRollAudioProcessor::decayId, 35.0f);
+    setParam (*a, LoopRollAudioProcessor::snapId, 1.0f);
+    setParam (*a, LoopRollAudioProcessor::momentaryId, 1.0f);
+    setParam (*a, LoopRollAudioProcessor::mixId, 42.0f);
+    setParam (*a, LoopRollAudioProcessor::stutterDepthId, 66.0f);
+    setParam (*a, LoopRollAudioProcessor::stutterSwingId, 25.0f);
+    setParam (*a, LoopRollAudioProcessor::getStepId (6).toRawUTF8(), 0.0f);
+    setParam (*a, LoopRollAudioProcessor::filterSlopeId, 1.0f);
+    setParam (*a, LoopRollAudioProcessor::limiterId, 0.0f);
 
     juce::MemoryBlock state;
     a->getStateInformation (state);
@@ -609,6 +812,19 @@ static void testParametersAndState()
     check (restoredText (LoopRollAudioProcessor::filterTypeId) == "Band Pass", "type de filtre non restaure");
     check (restoredText (LoopRollAudioProcessor::filterCutoffId) == "2.50 kHz", "coupure non restauree : " + restoredText (LoopRollAudioProcessor::filterCutoffId));
     check (restoredText (LoopRollAudioProcessor::filterResonanceId) == "64 %", "resonance non restauree");
+    check (restoredText (LoopRollAudioProcessor::divisionFeelId) == "Triplet" && restoredText (LoopRollAudioProcessor::stutterFeelId) == "Dotted"
+             && restoredText (LoopRollAudioProcessor::refreshFeelId) == "Straight", "variantes rythmiques non restaurees");
+    check (restoredText (LoopRollAudioProcessor::pitchId) == "-7 st", "pitch non restaure : " + restoredText (LoopRollAudioProcessor::pitchId));
+    check (restoredText (LoopRollAudioProcessor::decayId) == "35 %" && restoredText (LoopRollAudioProcessor::mixId) == "42 %", "decay / mix non restaures");
+    check (restoredText (LoopRollAudioProcessor::stutterDepthId) == "66 %" && restoredText (LoopRollAudioProcessor::stutterSwingId) == "25 %", "profondeur / swing non restaures");
+    check (restoredText (LoopRollAudioProcessor::filterSlopeId) == "24 dB", "pente non restauree");
+
+    for (const char* id : { LoopRollAudioProcessor::reverseId, LoopRollAudioProcessor::preId, LoopRollAudioProcessor::snapId, LoopRollAudioProcessor::momentaryId })
+        check (restored.getParameter (id)->getValue() > 0.5f, juce::String (id) + " non restaure");
+
+    check (restored.getParameter (LoopRollAudioProcessor::limiterId)->getValue() < 0.5f, "limiteur non restaure");
+    check (restored.getParameter (LoopRollAudioProcessor::getStepId (6))->getValue() < 0.5f
+             && restored.getParameter (LoopRollAudioProcessor::getStepId (7))->getValue() > 0.5f, "motif du stutter non restaure");
 
     // Projet sauvegardé avec la v0.3 : un seul mode pour la boucle et le refresh, aucun des nouveaux réglages.
     {
@@ -637,6 +853,14 @@ static void testParametersAndState()
             check (old.getParameter (LoopRollAudioProcessor::refreshTimeId)->getCurrentValueAsText() == "2.50 s", "etat v0.3 : intervalle de refresh");
             check (old.getParameter (LoopRollAudioProcessor::stutterId)->getValue() < 0.5f
                      && old.getParameter (LoopRollAudioProcessor::filterId)->getValue() < 0.5f, "etat v0.3 : stutter et filtre doivent rester eteints");
+
+            // Les réglages apparus depuis prennent leur valeur neutre : rien ne change à l'oreille.
+            check (old.getParameter (LoopRollAudioProcessor::mixId)->getCurrentValueAsText() == "100 %"
+                     && old.getParameter (LoopRollAudioProcessor::pitchId)->getCurrentValueAsText() == "0 st"
+                     && old.getParameter (LoopRollAudioProcessor::stutterDepthId)->getCurrentValueAsText() == "100 %"
+                     && old.getParameter (LoopRollAudioProcessor::divisionFeelId)->getCurrentValueAsText() == "Straight"
+                     && old.getParameter (LoopRollAudioProcessor::getStepId (6))->getValue() > 0.5f
+                     && old.getParameter (LoopRollAudioProcessor::preId)->getValue() < 0.5f, "ancien etat : les nouveaux reglages devraient etre neutres");
         }
     }
 
@@ -674,7 +898,7 @@ static void testEditor (const juce::File& outputDir)
     };
 
     using Ids = LoopRollAudioProcessor;
-    check (editor->getWidth() == 1104 && editor->getHeight() == 568, "taille d'interface : " + juce::String (editor->getWidth()) + " x " + juce::String (editor->getHeight()));
+    check (editor->getWidth() == 1104 && editor->getHeight() == 642, "taille d'interface : " + juce::String (editor->getWidth()) + " x " + juce::String (editor->getHeight()));
 
     const auto knob = [&editor] (const char* id) { return dynamic_cast<juce::Slider*> (editor->findChildWithID (id)); };
     const auto button = [&editor] (const juce::String& id) { return dynamic_cast<juce::TextButton*> (editor->findChildWithID (id)); };
@@ -693,11 +917,21 @@ static void testEditor (const juce::File& outputDir)
 
     bool allFound = true;
     for (const char* id : { Ids::timeId, Ids::divisionId, Ids::refreshTimeId, Ids::refreshDivisionId, Ids::stutterTimeId, Ids::stutterDivisionId,
-                            Ids::filterCutoffId, Ids::fadeInId, Ids::fadeOutId, Ids::stutterShapeId, Ids::filterResonanceId })
+                            Ids::filterCutoffId, Ids::fadeInId, Ids::fadeOutId, Ids::pitchId, Ids::decayId, Ids::mixId,
+                            Ids::stutterShapeId, Ids::stutterDepthId, Ids::stutterSwingId, Ids::filterResonanceId })
         allFound = allFound && knob (id) != nullptr;
 
-    for (const char* id : { Ids::modeId, Ids::refreshModeId, Ids::stutterModeId, Ids::filterTypeId, Ids::orderId })
+    for (const char* id : { Ids::modeId, Ids::refreshModeId, Ids::stutterModeId, Ids::filterTypeId, Ids::filterSlopeId, Ids::orderId })
         allFound = allFound && button (juce::String (id) + "/0") != nullptr && button (juce::String (id) + "/1") != nullptr;
+
+    for (const char* id : { Ids::divisionFeelId, Ids::refreshFeelId, Ids::stutterFeelId })
+        allFound = allFound && button (juce::String (id) + "/1") != nullptr && button (juce::String (id) + "/2") != nullptr;
+
+    for (const char* id : { Ids::loopId, Ids::reverseId, Ids::preId, Ids::snapId, Ids::momentaryId, Ids::limiterId })
+        allFound = allFound && button (id) != nullptr;
+
+    auto* stepGrid = dynamic_cast<StutterStepGrid*> (editor->findChildWithID ("stutterSteps"));
+    allFound = allFound && button (juce::String (Ids::filterTypeId) + "/2") != nullptr && stepGrid != nullptr;
 
     check (allFound, "controles introuvables dans l'interface");
 
@@ -730,15 +964,50 @@ static void testEditor (const juce::File& outputDir)
         setParam (*p, Ids::filterId, 1.0f);
         setParam (*p, Ids::filterCutoffId, 320.0f);
         setParam (*p, Ids::filterResonanceId, 60.0f);
+        setParam (*p, Ids::pitchId, 3.0f);
+        setParam (*p, Ids::decayId, 15.0f);
+        setParam (*p, Ids::preId, 1.0f);
+        setParam (*p, Ids::stutterSwingId, 40.0f);
+        setParam (*p, Ids::stutterDepthId, 80.0f);
+        setParam (*p, Ids::getStepId (3).toRawUTF8(), 0.0f);
+        setParam (*p, Ids::getStepId (10).toRawUTF8(), 0.0f);
+        setParam (*p, Ids::getStepId (11).toRawUTF8(), 0.0f);
         snapshot ("ui_all_on");
         check (readouts() == "1/16 | 1/4 | 1/32 | 320 Hz", "afficheurs en sync : " + readouts());
+        check (! stepGrid->isStepOn (3) && stepGrid->isStepOn (4) && ! stepGrid->isStepOn (11), "motif du stutter : l'affichage ne suit pas les parametres");
+        check (knob (Ids::pitchId)->getTextFromValue (knob (Ids::pitchId)->getValue()) == "+3 st", "valeur de pitch : " + knob (Ids::pitchId)->getTextFromValue (knob (Ids::pitchId)->getValue()));
+
+        // Le swing décale un pas sur deux : le premier pas de chaque paire est plus large.
+        check (stepGrid->getStepRange (0).getLength() > stepGrid->getStepRange (1).getLength() * 1.3f, "swing : les cases ne suivent pas");
+
+        // Triolet et pointé : un clic sur T, l'afficheur le dit, la durée change ; un second clic revient à la normale.
+        auto& apvtsNow = dynamic_cast<LoopRollAudioProcessor&> (*p).apvts;
+        button (juce::String (Ids::divisionFeelId) + "/1")->onClick();
+        check (apvtsNow.getParameter (Ids::divisionFeelId)->getCurrentValueAsText() == "Triplet", "le clic sur T ne change pas le parametre");
+        check (readouts() == "1/16 T | 1/4 | 1/32 | 320 Hz", "afficheur en triolet : " + readouts());
+        button (juce::String (Ids::stutterFeelId) + "/2")->onClick();
+        check (readouts() == "1/16 T | 1/4 | 1/32 D | 320 Hz", "afficheur en pointe : " + readouts());
+        button (juce::String (Ids::divisionFeelId) + "/1")->onClick();
+        button (juce::String (Ids::stutterFeelId) + "/2")->onClick();
+        check (readouts() == "1/16 | 1/4 | 1/32 | 320 Hz", "retour a la division normale : " + readouts());
+
+        // Mode momentané : la boucle ne tourne que tant que le bouton est enfoncé.
+        setParam (*p, Ids::loopId, 0.0f);
+        setParam (*p, Ids::momentaryId, 1.0f);
+        button (Ids::loopId)->setState (juce::Button::buttonDown);
+        check (apvtsNow.getParameter (Ids::loopId)->getValue() > 0.5f, "momentane : la boucle devrait tourner bouton enfonce");
+        button (Ids::loopId)->setState (juce::Button::buttonNormal);
+        check (apvtsNow.getParameter (Ids::loopId)->getValue() < 0.5f, "momentane : la boucle devrait s'arreter au relachement");
+        setParam (*p, Ids::momentaryId, 0.0f);
+        button (Ids::loopId)->onClick();
+        check (apvtsNow.getParameter (Ids::loopId)->getValue() > 0.5f, "bascule : un clic devrait allumer la boucle");
 
         // Chaque module a son propre mode : on ne passe que la boucle en FREE, par un clic sur son interrupteur.
         button (juce::String (Ids::modeId) + "/0")->onClick();
         setParam (*p, Ids::timeId, 1500.0f);
         juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
 
-        check (p->getParameters().size() == 20, "nombre de parametres : " + juce::String (p->getParameters().size()));
+        check (p->getParameters().size() == 50, "nombre de parametres : " + juce::String (p->getParameters().size()));
         check (dynamic_cast<LoopRollAudioProcessor&> (*p).apvts.getParameter (Ids::modeId)->getValue() < 0.5f, "le clic sur FREE ne change pas le parametre");
         check (knob (Ids::timeId)->isVisible() && ! knob (Ids::divisionId)->isVisible(), "boucle en free : mauvais potard visible");
         check (knob (Ids::refreshDivisionId)->isVisible() && ! knob (Ids::refreshTimeId)->isVisible(), "le refresh aurait du rester en sync");
@@ -746,6 +1015,8 @@ static void testEditor (const juce::File& outputDir)
         check (button (juce::String (Ids::modeId) + "/0")->getToggleState() && ! button (juce::String (Ids::modeId) + "/1")->getToggleState(),
                "interrupteur de la boucle : mauvais cote allume");
         check (button (juce::String (Ids::refreshModeId) + "/1")->getToggleState(), "interrupteur du refresh : mauvais cote allume");
+        check (! button (juce::String (Ids::divisionFeelId) + "/1")->isEnabled() && button (juce::String (Ids::refreshFeelId) + "/1")->isEnabled(),
+               "triolet / pointe : hors service en free seulement");
         check (readouts() == "1.50 s | 1/4 | 1/32 | 320 Hz", "afficheurs, boucle en free : " + readouts());
 
         // 1,5 s sur une plage 10 ms - 4 s : le potard doit être nettement à gauche (long = gauche).
@@ -759,7 +1030,11 @@ static void testEditor (const juce::File& outputDir)
         setParam (*p, Ids::stutterTimeId, 62.5f);
         setParam (*p, Ids::stutterShapeId, 90.0f);
         button (juce::String (Ids::filterTypeId) + "/1")->onClick();
+        button (juce::String (Ids::filterSlopeId) + "/1")->onClick();
         button (juce::String (Ids::orderId) + "/0")->onClick();
+        setParam (*p, Ids::reverseId, 1.0f);
+        setParam (*p, Ids::pitchId, -5.0f);
+        setParam (*p, Ids::mixId, 70.0f);
         setParam (*p, Ids::filterCutoffId, 2500.0f);
         setParam (*p, Ids::refreshId, 0.0f);
         snapshot ("ui_free_bandpass");
@@ -767,6 +1042,11 @@ static void testEditor (const juce::File& outputDir)
         auto& apvts = dynamic_cast<LoopRollAudioProcessor&> (*p).apvts;
         check (apvts.getParameter (Ids::filterTypeId)->getCurrentValueAsText() == "Band Pass", "le clic sur BP ne change pas le parametre");
         check (apvts.getParameter (Ids::orderId)->getCurrentValueAsText() == "Stutter > Loop", "le clic sur l'ordre ne change pas le parametre");
+        check (apvts.getParameter (Ids::filterSlopeId)->getCurrentValueAsText() == "24 dB", "le clic sur 24 dB ne change pas le parametre");
+        button (juce::String (Ids::filterTypeId) + "/2")->onClick();
+        check (apvts.getParameter (Ids::filterTypeId)->getCurrentValueAsText() == "Low Pass", "le clic sur LP ne change pas le parametre");
+        snapshot ("ui_lowpass");
+        button (juce::String (Ids::filterTypeId) + "/1")->onClick();
         check (knob (Ids::refreshTimeId)->isVisible() && knob (Ids::stutterTimeId)->isVisible(), "tout en free : mauvais potards visibles");
         check (knob (Ids::fadeInId)->getTextFromValue (knob (Ids::fadeInId)->getValue()) == "20 %", "valeur de fondu");
         check (readouts() == "1.50 s | 4.00 s | 62.5 ms | 2.50 kHz", "afficheurs en free : " + readouts());
@@ -800,6 +1080,7 @@ int main (int argc, char* argv[])
     testFades();
     testStutter();
     testFilter();
+    testVersion11();
     testParametersAndState();
     testEditor (argc > 1 ? juce::File::getCurrentWorkingDirectory().getChildFile (juce::String::fromUTF8 (argv[1])) : juce::File());
 

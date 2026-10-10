@@ -1,11 +1,11 @@
 cmake_minimum_required(VERSION 3.22)
 
 # --- Réglages à personnaliser -------------------------------------------------
-set(LOOPROLL_PRODUCT_NAME "Fragment")         # nom du plugin dans le DAW, et nom du fichier .vst3
+set(LOOPROLL_PRODUCT_NAME "Phragments")         # nom du plugin dans le DAW, et nom du fichier .vst3
 set(LOOPROLL_COMPANY_NAME "Phragma")          # nom affiché comme éditeur dans le DAW
-set(LOOPROLL_BUNDLE_ID    "com.phragma.fragment")
+set(LOOPROLL_BUNDLE_ID    "com.phragma.phragments")
 # -----------------------------------------------------------------------------
-# Le plugin s'appelait LoopRoll jusqu'à la v0.4 : ce nom reste celui du projet CMake,
+# Le plugin s'est appelé LoopRoll (jusqu'à la v0.4) puis Fragment (v1.0) : LoopRoll reste le nom du projet CMake,
 # des cibles et des classes. Ne changer ni PLUGIN_MANUFACTURER_CODE ni PLUGIN_CODE :
 # ce sont eux (et pas le nom) qui permettent aux DAW de retrouver le plugin dans les projets.
 
@@ -18,7 +18,7 @@ endif()
 # Windows : runtime C++ lié en statique -> aucun "Visual C++ Redistributable" à installer
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-project(LoopRoll VERSION 1.0.0 LANGUAGES C CXX)
+project(LoopRoll VERSION 1.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

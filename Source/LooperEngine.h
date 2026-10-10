@@ -14,6 +14,10 @@
     l'audio en direct (la sortie EST l'enregistrement), les suivants le
     répètent.
 
+    Capture « pré » : l'entrée est enregistrée en permanence dans un historique.
+    Avec setPreCapture (true), la boucle prend la tranche qui vient de jouer et
+    la répète tout de suite, sans passage en direct.
+
     Anti-clic sans ramollir les transitoires :
       - le raccord de fin de boucle est un fondu de la queue de boucle vers
         les quelques millisecondes d'audio qui PRÉCÉDAIENT le point de départ
@@ -22,15 +26,22 @@
       - les sauts de position (changement de division) et l'arrêt de la
         boucle passent par un fondu court.
 
+    Pitch, reverse, decay : réglés par répétition (le passage en direct n'est
+    jamais touché). Une répétition transposée ou inversée est relue par
+    interpolation, avec une courte fenêtre à chaque raccord ; tant que pitch,
+    reverse et decay sont à zéro, la répétition reste la copie exacte de
+    l'enregistrement.
+
     Refresh : à intervalle régulier, la boucle est recapturée. Juste avant le
-    point de refresh, la boucle en cours est fondue vers l'entrée en direct ;
-    la nouvelle capture démarre donc elle aussi sur un échantillon à plein
-    niveau, et le premier passage est de nouveau l'audio en direct.
+    point de refresh, la boucle en cours est fondue vers ce qui suit (le direct,
+    ou le début de la tranche en capture « pré »).
+
+    Calage (snap) : le départ peut être aligné sur une grille fournie par l'hôte.
+    Un appui légèrement en retard est rattrapé (la capture est ancrée sur la
+    ligne de grille qui vient de passer), sinon le départ attend la suivante.
 
     Fondus : une enveloppe (fondu d'entrée / de sortie, en fraction de la durée
-    de boucle) est appliquée à chaque passage, y compris le premier. Elle est
-    calculée par tête de lecture, donc elle reste continue à travers les
-    raccords et les refresh.
+    de boucle) est appliquée à chaque passage, y compris le premier.
 
     Tout est alloué dans prepare() : process() ne fait ni allocation ni verrou.
 */
@@ -41,16 +52,18 @@ public:
     {
         const double sr = sampleRate > 0.0 ? sampleRate : 44100.0;
 
-        channels = std::max (1, numChannels);
-        maxFade  = std::max (16, (int) std::lround (0.003 * sr));   // 3 ms
-        preRoll  = maxFade;
-        maxLoop  = std::max (minLoop * 2, (int) std::ceil (maxLoopSeconds * sr));
-        capacity = maxLoop + maxFade + 8;
-        gateStep = 1.0f / (float) maxFade;
+        channels  = std::max (1, numChannels);
+        maxFade   = std::max (16, (int) std::lround (0.003 * sr));   // 3 ms
+        preRoll   = maxFade;
+        maxLoop   = std::max (minLoop * 2, (int) std::ceil (maxLoopSeconds * sr));
+        maxAnchor = std::max (16, (int) std::ceil (0.06 * sr));      // retard d'appui rattrapé par le calage : 60 ms
+        capacity  = maxLoop + maxAnchor + maxFade + 8;
+        historySize = preRoll + maxLoop + maxAnchor + 16;
+        gateStep  = 1.0f / (float) maxFade;
         shapeSmoothing = 1.0 - std::exp (-1.0 / (0.02 * sr));   // ~20 ms
 
         buffer.assign ((std::size_t) channels, std::vector<float> ((std::size_t) (preRoll + capacity), 0.0f));
-        history.assign ((std::size_t) channels, std::vector<float> ((std::size_t) preRoll, 0.0f));
+        history.assign ((std::size_t) channels, std::vector<float> ((std::size_t) historySize, 0.0f));
 
         requestedLength = clampLength (requestedLength);
         reset();
@@ -64,6 +77,8 @@ public:
         fading = false;
         pendingReanchor = false;
         refreshFading = false;
+        armed = false;
+        leadIn = false;
         historyPos = 0;
         captured = 0;
         elapsed = 0;
@@ -73,6 +88,8 @@ public:
         refreshPos = 0.0;
         fadeInNow = fadeInTarget;
         fadeOutNow = fadeOutTarget;
+        passA = Pass();
+        passB = Pass();
 
         for (auto& h : history)
             std::fill (h.begin(), h.end(), 0.0f);
@@ -153,7 +170,42 @@ public:
         }
     }
 
+    /** Transposition ajoutée à chaque répétition, en demi-tons (cumul borné à ±36). Prise en compte au passage suivant. */
+    void setPitch (double semitonesPerPass) noexcept
+    {
+        pitchStep = std::isnan (semitonesPerPass) ? 0.0 : std::max (-24.0, std::min (24.0, semitonesPerPass));
+    }
+
+    /** Répétitions lues à l'envers. Prise en compte au passage suivant. */
+    void setReverse (bool shouldReverse) noexcept    { reverse = shouldReverse; }
+
+    /** Baisse de niveau à chaque répétition, de 0 (aucune) à 1 (silence dès la première). */
+    void setDecay (double amountPerPass) noexcept
+    {
+        decay = std::isnan (amountPerPass) ? 0.0 : std::max (0.0, std::min (1.0, amountPerPass));
+    }
+
+    /** true = la boucle répète tout de suite la tranche qui vient de jouer (pas de passage en direct). */
+    void setPreCapture (bool shouldGrabThePast) noexcept    { preCapture = shouldGrabThePast; }
+
+    /**
+        Calage du départ sur une grille. À appeler avant chaque process() :
+        gridStepInSamples = pas de la grille, samplesSinceGridLine = où en est le
+        premier échantillon du bloc par rapport à la dernière ligne de grille.
+    */
+    void setSnap (bool enabled, double gridStepInSamples, double samplesSinceGridLine) noexcept
+    {
+        const bool valid = enabled && ! std::isnan (gridStepInSamples) && ! std::isnan (samplesSinceGridLine)
+                             && gridStepInSamples >= 16.0;
+
+        snapEnabled = valid;
+        snapStep = valid ? gridStepInSamples : 0.0;
+        snapPhase = valid ? std::max (0.0, std::min (samplesSinceGridLine, gridStepInSamples)) : 0.0;
+        snapFresh = true;
+    }
+
     bool isLooping() const noexcept                  { return state == State::looping; }
+    bool isArmed() const noexcept                    { return armed; }
     double getLoopLength() const noexcept            { return requestedLength; }
     int getMaxLoopLength() const noexcept            { return maxLoop; }
 
@@ -169,16 +221,15 @@ public:
         {
             if (state == State::idle)
             {
-                if (! wantActive)
-                {
-                    for (int ch = 0; ch < numCh; ++ch)
-                        history[(std::size_t) ch][(std::size_t) historyPos] = io[ch][n];
+                int anchor = 0;
 
-                    advanceHistory();
+                if (! waitingToStart (n, anchor))
+                {
+                    idleSample (io, numCh, n);
                     continue;
                 }
 
-                startLoop();
+                startLoop (anchor);
             }
 
             const bool canCapture = captured < capacity;
@@ -212,29 +263,48 @@ public:
                 envPreRoll = envelopeGain (-1);   // niveau juste avant un début de boucle
             }
 
-            const std::size_t indexA = bufferIndex (pos, canCapture);
-            const std::size_t indexB = fading ? bufferIndex (posB, canCapture) : indexA;
+            // Raccord vers une répétition transposée ou inversée : la tête en cours s'éteint,
+            // la suivante repartira du silence (pas de fondu enchaîné vers le pré-roll).
+            const bool dip = fading && fadeIsWrap && passB.vari;
+
+            const Tap tapA = makeTap (pos, passA, canCapture);
+            const Tap tapB = (fading && ! dip) ? makeTap (posB, passB, canCapture) : tapA;
+            const std::size_t delayed = historyIndexBack (sliceLength (requestedLength));
 
             for (int ch = 0; ch < numCh; ++ch)
             {
                 const float in = io[ch][n];
                 auto& buf = buffer[(std::size_t) ch];
+                auto& hist = history[(std::size_t) ch];
 
-                history[(std::size_t) ch][(std::size_t) historyPos] = in;
+                hist[(std::size_t) historyPos] = in;
 
                 if (canCapture)
                     buf[(std::size_t) (preRoll + captured)] = in;
 
-                float wet = buf[indexA];
+                float wet = readTap (buf, tapA);
 
                 if (shaping)
                     wet *= envA;
 
                 if (fading)
-                    wet += fadeGain * ((shaping ? buf[indexB] * envB : buf[indexB]) - wet);
+                {
+                    if (dip)
+                    {
+                        wet *= 1.0f - fadeGain;
+                    }
+                    else
+                    {
+                        const float other = readTap (buf, tapB);
+                        wet += fadeGain * ((shaping ? other * envB : other) - wet);
+                    }
+                }
 
-                if (refreshFading)   // la boucle sortante s'efface vers le début de la capture suivante
-                    wet += refreshGain * ((shaping ? in * envPreRoll : in) - wet);
+                if (refreshFading)   // la boucle sortante s'efface vers le début de ce qui suit
+                {
+                    const float next = refreshToSilence ? 0.0f : (refreshToPast ? hist[delayed] : in);
+                    wet += refreshGain * ((shaping ? next * envPreRoll : next) - wet);
+                }
 
                 // gate == 1 : copie exacte de l'enregistrement (pas d'arrondi flottant)
                 io[ch][n] = gate >= 1.0f ? wet : in + gate * (wet - in);
@@ -296,12 +366,34 @@ public:
                 }
             }
         }
+
+        snapFresh = false;
     }
 
 private:
     enum class State { idle, looping, releasing };
 
     static constexpr int minLoop = 64;
+
+    /** Réglages d'un passage, figés à son début : un passage ne change pas de vitesse en route. */
+    struct Pass
+    {
+        double rate = 1.0;      // vitesse de lecture
+        bool transposed = false;
+        double len = 0.0;       // durée de la tranche relue
+        float gain = 1.0f;      // decay
+        bool reverse = false;
+        bool vari = false;      // transposé ou inversé : lecture interpolée + fenêtre
+        int index = 0;          // 0 = passage en direct, 1 = première répétition…
+    };
+
+    /** Lecture d'une tête à un instant donné : indices, interpolation, gain. */
+    struct Tap
+    {
+        std::size_t i0 = 0, i1 = 0;
+        float frac = 0.0f, gain = 1.0f;
+        bool interpolate = false;
+    };
 
     double clampLength (double l) const noexcept
     {
@@ -316,10 +408,92 @@ private:
         return std::max (8, std::min (maxFade, (int) (l * 0.25)));
     }
 
+    /** Nombre d'échantillons de la tranche prise dans le passé en capture « pré ». */
+    static int sliceLength (double l) noexcept       { return (int) std::ceil (l); }
+
     double smoothTowards (double current, double target) const noexcept
     {
         const double delta = target - current;
         return std::abs (delta) < 1.0e-5 ? target : current + delta * shapeSmoothing;
+    }
+
+    Pass makePass (int index) const noexcept
+    {
+        Pass p;
+        p.index = index;
+        p.len = length;
+
+        if (index > 0)
+        {
+            const double semitones = std::max (-36.0, std::min (36.0, pitchStep * (double) index));
+
+            if (std::abs (semitones) > 1.0e-9)
+            {
+                p.rate = std::pow (2.0, semitones / 12.0);
+                p.transposed = true;
+            }
+
+            p.reverse = reverse;
+
+            if (decay > 0.0)
+                p.gain = (float) std::pow (1.0 - decay, (double) index);
+        }
+
+        p.vari = p.reverse || p.transposed;
+        return p;
+    }
+
+    /** true si la première répétition sera transposée ou inversée (elle repartira alors du silence). */
+    bool firstRepeatIsVari() const noexcept          { return reverse || std::abs (pitchStep) > 1.0e-9; }
+
+    Tap makeTap (int p, const Pass& pass, bool capturingNow) const noexcept
+    {
+        Tap tap;
+        tap.gain = pass.gain;
+
+        if (! pass.vari)
+        {
+            tap.i0 = bufferIndex (p, capturingNow);
+            return tap;
+        }
+
+        // Position dans la tranche : on avance à la vitesse du passage et on reboucle en bout de tranche.
+        const double len = std::max ((double) minLoop, pass.len);
+        const double out = (double) std::max (0, p);
+        const double travelled = pass.rate * out;
+        const double inSlice = travelled - len * std::floor (travelled / len);
+        const double source = pass.reverse ? std::max (0.0, len - 1.0 - inSlice) : inSlice;
+        const double whole = std::floor (source);
+
+        tap.frac = (float) (source - whole);
+        tap.interpolate = tap.frac > 0.0f;
+        tap.i0 = bufferIndex ((int) whole, capturingNow);
+        tap.i1 = bufferIndex ((int) whole + 1, capturingNow);
+
+        // Fenêtre : courte montée après chaque raccord, courte descente avant le suivant.
+        const double period = len / pass.rate;                       // durée d'une traversée de la tranche
+        const double segment = std::min (len, period);
+        const double ramp = std::max (4.0, std::min ((double) maxFade * 0.5, segment * 0.25));
+        double window = std::min ((out + 1.0) / ramp, (len - out) / ramp);
+
+        if (pass.rate > 1.0)
+        {
+            const double sinceWrap = out - period * std::floor (out / period);
+            window = std::min (window, std::min ((sinceWrap + 1.0) / ramp, (period - sinceWrap) / ramp));
+        }
+
+        tap.gain *= (float) std::max (0.0, std::min (1.0, window));
+        return tap;
+    }
+
+    static float readTap (const std::vector<float>& buf, const Tap& tap) noexcept
+    {
+        float v = buf[tap.i0];
+
+        if (tap.interpolate)
+            v += tap.frac * (buf[tap.i1] - v);
+
+        return tap.gain < 1.0f ? v * tap.gain : v;   // gain == 1 : copie exacte
     }
 
     /**
@@ -357,8 +531,19 @@ private:
 
     void advanceHistory() noexcept
     {
-        if (++historyPos >= preRoll)
+        if (++historyPos >= historySize)
             historyPos = 0;
+    }
+
+    /** Index, dans l'historique, de l'entrée d'il y a "back" échantillons. */
+    std::size_t historyIndexBack (int back) const noexcept
+    {
+        int index = historyPos - std::max (0, std::min (back, historySize - 1));
+
+        if (index < 0)
+            index += historySize;
+
+        return (std::size_t) index;
     }
 
     /** Position de lecture (relative au début de boucle, négative = pré-roll) -> index dans le buffer. */
@@ -368,41 +553,152 @@ private:
         return (std::size_t) (preRoll + std::max (-preRoll, std::min (p, lastValid)));
     }
 
-    /** Démarre une capture à l'échantillon suivant (activation ou refresh). */
-    void beginCapture() noexcept
+    //==========================================================================
+    /**
+        Boucle à l'arrêt : faut-il démarrer à cet échantillon ? Gère le calage sur la grille.
+        Renvoie true pour démarrer ; "anchor" = nombre d'échantillons dont la capture est antidatée.
+    */
+    bool waitingToStart (int n, int& anchor) noexcept
     {
-        // Le pré-roll = les dernières millisecondes d'entrée, dans l'ordre chronologique.
+        anchor = 0;
+
+        if (! wantActive)
+        {
+            armed = false;
+            leadIn = false;
+            return false;
+        }
+
+        if (! snapEnabled)
+        {
+            armed = false;
+            leadIn = false;
+            return true;
+        }
+
+        double phase = snapPhase + (double) n;
+
+        if (phase >= snapStep)
+            phase -= snapStep * std::floor (phase / snapStep);
+
+        if (! armed)
+        {
+            const double tolerance = std::min (snapStep / 3.0, (double) maxAnchor);
+
+            if (phase <= tolerance)
+            {
+                anchor = (int) std::lround (phase);   // appui en retard : on s'ancre sur la ligne qui vient de passer
+                return true;
+            }
+
+            armed = true;
+            armCountdown = snapStep - phase;
+            leadLength = fadeFor (requestedLength);
+            leadIn = preCapture && armCountdown >= (double) leadLength + 1.0;
+            return false;
+        }
+
+        if (n == 0 && snapFresh)   // début de bloc : on se recale sur la position de l'hôte
+            armCountdown = phase < 1.5 ? 0.0 : snapStep - phase;
+
+        if (armCountdown < 0.5)
+        {
+            armed = false;
+            return true;
+        }
+
+        return false;
+    }
+
+    /** Un échantillon de direct, boucle à l'arrêt (avec le fondu d'approche d'un départ calé en capture « pré »). */
+    void idleSample (float* const* io, int numCh, int n) noexcept
+    {
+        float lead = 0.0f;
+
+        if (armed)
+        {
+            if (leadIn && armCountdown <= (double) leadLength)
+            {
+                const float t = 1.0f - (float) std::max (0.0, armCountdown - 1.0) / (float) leadLength;
+                lead = t * t * (3.0f - 2.0f * t);
+            }
+
+            armCountdown -= 1.0;
+        }
+
+        const bool toSilence = firstRepeatIsVari();
+        const std::size_t delayed = historyIndexBack (sliceLength (requestedLength));
+
+        for (int ch = 0; ch < numCh; ++ch)
+        {
+            auto& hist = history[(std::size_t) ch];
+            const float in = io[ch][n];
+            hist[(std::size_t) historyPos] = in;
+
+            if (lead > 0.0f)   // le direct s'efface vers ce qui précède la tranche : elle démarrera à plein niveau
+                io[ch][n] = in + lead * ((toSilence ? 0.0f : hist[delayed]) - in);
+        }
+
+        advanceHistory();
+    }
+
+    /**
+        Démarre une capture à l'échantillon courant (activation ou refresh).
+        anchor = la capture est antidatée de ce nombre d'échantillons (calage sur la grille).
+        En capture « pré », la tranche qui précède est reprise dans l'historique.
+    */
+    void beginCapture (int anchor) noexcept
+    {
+        length = requestedLength;
+
+        const int slice = preCapture ? sliceLength (length) : 0;
+        const int back = std::max (0, std::min (slice + anchor, std::min (capacity - maxFade - 8, historySize - preRoll - 1)));
+        const int count = preRoll + back;
+        int start = historyPos - count;
+
+        if (start < 0)
+            start += historySize;
+
+        const int first = std::min (count, historySize - start);
+
         for (std::size_t ch = 0; ch < buffer.size(); ++ch)
         {
             const auto& h = history[ch];
             auto& buf = buffer[ch];
 
-            for (int i = 0; i < preRoll; ++i)
-                buf[(std::size_t) i] = h[(std::size_t) ((historyPos + i) % preRoll)];
+            std::copy (h.begin() + start, h.begin() + start + first, buf.begin());
+            std::copy (h.begin(), h.begin() + (count - first), buf.begin() + first);
         }
 
-        length = requestedLength;
-        captured = 0;
-        elapsed = 0;
-        pos = 0;
-        iterPos = 0.0;
+        captured = back;
+        elapsed = back;
+
+        // Position dans le passage : "anchor" échantillons après la ligne de grille.
+        const double sinceLine = (double) std::max (0, back - slice);
+        const int passesDone = (int) (sinceLine / length);
+
+        iterPos = sinceLine - (double) passesDone * length;
+        pos = (int) iterPos;
         fading = false;
         pendingReanchor = false;
+        passA = makePass ((slice > 0 ? 1 : 0) + passesDone);
+        passB = passA;
     }
 
-    void startLoop() noexcept
+    void startLoop (int anchor) noexcept
     {
-        beginCapture();
-        totalElapsed = 0;
-        refreshPos = 0.0;
+        beginCapture (anchor);
+        totalElapsed = anchor;
+        refreshPos = (double) anchor;
         refreshFading = false;
         fadeInNow = fadeInTarget;
         fadeOutNow = fadeOutTarget;
-        gate = 0.0f;
+        gate = leadIn ? 1.0f : 0.0f;   // après un fondu d'approche, la boucle démarre à plein niveau
+        leadIn = false;
         state = State::looping;
     }
 
-    /** Fondu de la boucle en cours vers le direct, qui se termine pile sur le point de refresh. */
+    /** Fondu de la boucle en cours vers ce qui suit, qui se termine pile sur le point de refresh. */
     void startRefreshFade (double remaining) noexcept
     {
         const int maxLen = fadeFor (refreshInterval);
@@ -419,6 +715,8 @@ private:
         refreshFadeLength = n;
         refreshFadeCount = 0;
         refreshCarry = carry;
+        refreshToPast = preCapture;
+        refreshToSilence = preCapture && firstRepeatIsVari();
         refreshFading = true;
     }
 
@@ -426,7 +724,7 @@ private:
     {
         refreshFading = false;
         refreshPos = refreshCarry;
-        beginCapture();   // le gate reste ouvert : le premier passage est le direct, sans transition
+        beginCapture (0);   // le gate reste ouvert : pas de transition
     }
 
     /** Fondu de la lecture en cours vers le pré-roll, qui débouche pile sur le début de boucle. */
@@ -449,17 +747,19 @@ private:
         fadeLength = n;
         fadeCount = 0;
         posB = -n;
+        passB = makePass (passA.index + 1);
         fadeIsWrap = true;
         fadeCarry = carry;
         fading = true;
     }
 
     /** Fondu vers une autre position de la boucle. */
-    void startJumpFade (int target) noexcept
+    void startJumpFade (int target, int passIndex) noexcept
     {
         fadeLength = fadeFor (length);
         fadeCount = 0;
         posB = target;
+        passB = makePass (passIndex);
         fadeIsWrap = false;
         fading = true;
     }
@@ -468,6 +768,7 @@ private:
     {
         fading = false;
         pos = posB;
+        passA = passB;
 
         if (fadeIsWrap)
             iterPos = fadeCarry;
@@ -500,17 +801,17 @@ private:
         else
         {
             iterPos = newIterPos;
-            startJumpFade (target);
+            startJumpFade (target, (int) ((double) elapsed / length));
         }
     }
 
     //==========================================================================
     std::vector<std::vector<float>> buffer;    // [canal][preRoll + capacity]
-    std::vector<std::vector<float>> history;   // [canal][preRoll] : dernières ms d'entrée
+    std::vector<std::vector<float>> history;   // [canal][historySize] : l'entrée, en continu
 
     int channels = 0;
-    int maxFade = 16, preRoll = 16, maxLoop = minLoop * 2, capacity = 0;
-    int historyPos = 0;
+    int maxFade = 16, preRoll = 16, maxLoop = minLoop * 2, maxAnchor = 16, capacity = 0;
+    int historySize = 1, historyPos = 0;
 
     State state = State::idle;
     bool wantActive = false;
@@ -523,17 +824,27 @@ private:
     int captured = 0;                   // échantillons enregistrés
     int pos = 0;                        // tête de lecture principale
 
+    Pass passA, passB;                  // réglages du passage de chaque tête
     bool fading = false, fadeIsWrap = false, pendingReanchor = false;
     int posB = 0, fadeLength = 0, fadeCount = 0;
     double fadeCarry = 0.0;
 
+    // Répétitions
+    double pitchStep = 0.0, decay = 0.0;
+    bool reverse = false, preCapture = false;
+
     // Refresh
-    bool refreshEnabled = false, refreshFading = false;
+    bool refreshEnabled = false, refreshFading = false, refreshToPast = false, refreshToSilence = false;
     double refreshInterval = 88200.0;   // intervalle demandé
     double refreshPos = 0.0;            // position dans l'intervalle courant (fractionnaire)
     double refreshCarry = 0.0;
     std::int64_t totalElapsed = 0;      // échantillons depuis l'activation de la boucle
     int refreshFadeLength = 0, refreshFadeCount = 0;
+
+    // Calage du départ sur la grille
+    bool snapEnabled = false, snapFresh = false, armed = false, leadIn = false;
+    double snapStep = 0.0, snapPhase = 0.0, armCountdown = 0.0;
+    int leadLength = 0;
 
     // Fondus par passage (fractions de la durée de boucle)
     double fadeInTarget = 0.0, fadeOutTarget = 0.0;   // demandés

@@ -1,21 +1,21 @@
-Fragment by Phragma - installation
-==================================
+Phragments by Phragma - installation
+====================================
 
 macOS (Apple Silicon et Intel, macOS 10.13 ou plus recent)
 ----------------------------------------------------------
-1. Copie "Fragment.vst3" dans :
+1. Copie "Phragments.vst3" dans :
        /Library/Audio/Plug-Ins/VST3/
    (Finder > menu Aller > Aller au dossier... > colle ce chemin)
    Ne garde qu'UNE copie du plugin : s'il en reste une autre dans
    ~/Library/Audio/Plug-Ins/VST3/, le DAW peut charger l'ancienne version.
-   Le plugin s'appelait LoopRoll jusqu'a la v0.4 : si un ancien "LoopRoll.vst3"
-   traine dans un de ces dossiers, supprime-le (c'est le meme plugin, les projets
-   existants rouvrent avec Fragment).
+   Le plugin s'est appele LoopRoll puis Fragment : si un ancien "LoopRoll.vst3"
+   ou "Fragment.vst3" traine dans un de ces dossiers, supprime-le (c'est le meme
+   plugin, les projets existants rouvrent avec Phragments).
 
 2. Le plugin n'est pas notarise par Apple : macOS le bloque tant que tu n'as pas
    retire le marqueur de telechargement. Ouvre l'app Terminal et lance :
 
-       xattr -dr com.apple.quarantine /Library/Audio/Plug-Ins/VST3/Fragment.vst3
+       xattr -dr com.apple.quarantine /Library/Audio/Plug-Ins/VST3/Phragments.vst3
 
 3. Relance ton DAW et rescanne les plugins.
    Ableton Live : Reglages > Plug-Ins > active "Utiliser les dossiers systeme VST3", puis "Rescanner".
@@ -23,9 +23,10 @@ macOS (Apple Silicon et Intel, macOS 10.13 ou plus recent)
 
 Windows (64 bits)
 -----------------
-1. Copie le DOSSIER "Fragment.vst3" en entier dans :
+1. Copie le DOSSIER "Phragments.vst3" en entier dans :
        C:\Program Files\Common Files\VST3\
-   S'il y a un ancien dossier "LoopRoll.vst3" au meme endroit, supprime-le.
+   S'il y a un ancien dossier "LoopRoll.vst3" ou "Fragment.vst3" au meme endroit,
+   supprime-le.
 
 2. Relance ton DAW et rescanne les plugins.
    Aucune installation supplementaire n'est necessaire.
@@ -40,33 +41,48 @@ LOOP           Allume : capture l'audio a partir de cet instant puis le repete.
   LENGTH       Duree de la boucle. Tourner a droite raccourcit.
   IN / OUT     Fondu d'entree et de sortie sur chaque passage de la boucle,
                en % de sa duree. 0 % = boucle brute.
+  PITCH        Transposition ajoutee a chaque repetition (demi-tons).
+  DECAY        Baisse de niveau a chaque repetition.
+  REV          Repetitions lues a l'envers.
+  PRE          La boucle repete tout de suite la tranche qui vient de jouer.
+  SNAP         Depart cale sur la grille du projet (transport en lecture).
+  MOMENT       Le bouton LOOP ne joue que tant qu'il est enfonce.
 
 REFRESH        Allume : la boucle est recapturee a intervalle regulier.
+               N'agit que si LOOP est allume.
   EVERY        Intervalle entre deux recaptures. Tourner a droite = plus frequent.
-  CHAIN ORDER  Ordre du stutter et du looper (le filtre est toujours en dernier) :
+
+CHAIN          Ordre du stutter et du looper (le filtre vient toujours apres) :
                LOOP > STUTTER : la boucle repete le son brut, le gate hache le resultat.
                STUTTER > LOOP : le son est hache, puis la boucle repete ce son hache.
+  MIX          Dry / wet sur tout le plugin.
 
-STUTTER        Gate rythmique : chaque pas ouvre le son puis le referme en dent
-               de scie descendante.
+STUTTER        Gate rythmique a 16 pas : chaque pas ouvre le son puis le referme
+               en dent de scie descendante.
   RATE         Duree d'un pas. Tourner a droite = plus rapide.
+  Motif        Clique sur une case pour eteindre ou rallumer un pas
+               (glisse pour en changer plusieurs).
   SHAPE        Courbe de la descente : 0 % = quasi carre, 50 % = lineaire,
                100 % = tres ferme.
+  DEPTH        Profondeur : 100 % = jusqu'au silence.
+  SWING        Allonge un pas sur deux, raccourcit le suivant.
 
 FILTER         Filtre resonant sur tout le son, en fin de chaine.
   CUTOFF       Frequence, de 20 Hz a 20 kHz.
-  HP / BP      Passe-haut ou passe-bande.
+  HP / BP / LP Passe-haut, passe-bande, passe-bas.
+  12 / 24 dB   Pente par octave.
   RESO         Resonance.
+  LIMITER      Limiteur de securite a 0 dBFS (allume par defaut).
 
 FREE / SYNC    Un interrupteur par module (LOOP, REFRESH, STUTTER), independants.
                SYNC : divisions calees sur le tempo du projet.
                FREE : durees libres. Clic sur la valeur pour la saisir au clavier
                (pareil pour la frequence du filtre).
+T / D          En SYNC : triolet ou pointe.
 
 LOOP, STUTTER et FILTER fonctionnent seuls ou ensemble.
-REFRESH n'agit que quand LOOP est allume.
 
-Le numero de version est affiche en haut a droite de l'interface.
+Le nom et le numero de version sont affiches en haut de l'interface.
 
 Exemple : LENGTH 1/16 + EVERY 1/4 = un seizieme de direct puis trois
 repetitions, a chaque noire.
