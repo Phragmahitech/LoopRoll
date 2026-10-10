@@ -109,6 +109,15 @@ namespace
 }
 
 //==============================================================================
+juce::String LoopRollAudioProcessor::pitchToText (float semitones)
+{
+    const float rounded = std::round (semitones);
+    const bool whole = std::abs (semitones - rounded) < 0.005f;
+    const auto number = whole ? juce::String (juce::roundToInt (rounded)) : juce::String (semitones, 2);
+
+    return ((whole ? rounded : semitones) > 0.0f ? "+" : "") + number + " st";
+}
+
 const juce::StringArray& LoopRollAudioProcessor::getDivisionNames()
 {
     static const juce::StringArray names { "1/1", "1/2", "1/4", "1/8", "1/16", "1/32", "1/64", "1/128" };
@@ -199,20 +208,13 @@ juce::AudioProcessorValueTreeState::ParameterLayout LoopRollAudioProcessor::crea
     layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { refreshFeelId, 1 }, "Refresh Feel", getFeelNames(), 0));
     layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { stutterFeelId, 1 }, "Stutter Feel", getFeelNames(), 0));
 
-    layout.add (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { pitchId, 1 }, "Loop Pitch",
-                                                             juce::NormalisableRange<float> (-12.0f, 12.0f, 1.0f), 0.0f,
+    // Pitch : en demi-tons, au centième près. En mode "Semitones" (voir pitchMode) la valeur est arrondie au demi-ton.
+    layout.add (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { pitchId, 1 }, "Pitch",
+                                                             juce::NormalisableRange<float> (-12.0f, 12.0f, 0.01f), 0.0f,
                                                              juce::AudioParameterFloatAttributes()
-                                                                 .withStringFromValueFunction ([] (float value, int)
-                                                                 {
-                                                                     const int semitones = juce::roundToInt (value);
-                                                                     return (semitones > 0 ? "+" : "") + juce::String (semitones) + " st";
-                                                                 })
+                                                                 .withStringFromValueFunction ([] (float value, int) { return pitchToText (value); })
                                                                  .withValueFromStringFunction ([] (const juce::String& text) { return text.retainCharacters ("-0123456789.,").replaceCharacter (',', '.').getFloatValue(); })));
     layout.add (makeSwitch (reverseId, "Loop Reverse", false));
-    layout.add (makeSwitch (preId, "Loop Pre Capture", false));
-    layout.add (makePercentParameter (decayId, "Loop Decay", 0.0f));
-    layout.add (makeSwitch (snapId, "Loop Snap", false));
-    layout.add (makeSwitch (momentaryId, "Loop Momentary", false));
     layout.add (makePercentParameter (mixId, "Mix", 100.0f));
 
     layout.add (makePercentParameter (stutterDepthId, "Stutter Depth", 100.0f));
@@ -224,6 +226,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout LoopRollAudioProcessor::crea
     layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { filterSlopeId, 1 }, "Filter Slope",
                                                               juce::StringArray { "12 dB", "24 dB" }, 0));
     layout.add (makeSwitch (limiterId, "Limiter", true));
+
+    // Depuis la v1.2
+    layout.add (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { pitchModeId, 1 }, "Pitch Mode",
+                                                              juce::StringArray { "Semitones", "Free" }, 0));
 
     return layout;
 }
@@ -259,14 +265,12 @@ LoopRollAudioProcessor::LoopRollAudioProcessor()
     stutterFeelParam     = apvts.getRawParameterValue (stutterFeelId);
     pitchParam           = apvts.getRawParameterValue (pitchId);
     reverseParam         = apvts.getRawParameterValue (reverseId);
-    preParam             = apvts.getRawParameterValue (preId);
-    decayParam           = apvts.getRawParameterValue (decayId);
-    snapParam            = apvts.getRawParameterValue (snapId);
     mixParam             = apvts.getRawParameterValue (mixId);
     stutterDepthParam    = apvts.getRawParameterValue (stutterDepthId);
     stutterSwingParam    = apvts.getRawParameterValue (stutterSwingId);
     filterSlopeParam     = apvts.getRawParameterValue (filterSlopeId);
     limiterParam         = apvts.getRawParameterValue (limiterId);
+    pitchModeParam       = apvts.getRawParameterValue (pitchModeId);
 
     for (int i = 0; i < numStutterSteps; ++i)
         stepParams[i] = apvts.getRawParameterValue (getStepId (i));
@@ -285,6 +289,7 @@ void LoopRollAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlo
     currentSampleRate = sampleRate > 0.0 ? sampleRate : 44100.0;
     engine.prepare (currentSampleRate, juce::jmax (1, getTotalNumOutputChannels()), maxLoopSeconds);
     gate.prepare (currentSampleRate);
+    shifter.prepare (currentSampleRate, juce::jmax (1, getTotalNumOutputChannels()));
     filter.prepare (currentSampleRate);
     lastDivision = -1;
     lastRefreshDivision = -1;
@@ -300,6 +305,7 @@ void LoopRollAudioProcessor::reset()
 {
     engine.reset();
     gate.reset();
+    shifter.reset();
     filter.reset();
 }
 
@@ -385,24 +391,7 @@ void LoopRollAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
     lastRefreshFeel = refreshFeel;
 
     engine.setFades (0.01 * (double) value (fadeInParam), 0.01 * (double) value (fadeOutParam));
-    engine.setPitch ((double) value (pitchParam));
     engine.setReverse (isOn (reverseParam));
-    engine.setDecay (0.01 * (double) value (decayParam));
-    engine.setPreCapture (isOn (preParam));
-
-    // Calage du départ : sur la division de la boucle (jamais plus fin que la double croche,
-    // et sans triolet ni pointé), ou sur la double croche en mode free.
-    if (isOn (snapParam) && hostIsMoving)
-    {
-        const double gridBeats = loopSync ? juce::jmax (0.25, getDivisionInBeats (division)) : 0.25;
-        const double position = hostBeats / gridBeats;
-        engine.setSnap (true, gridBeats * samplesPerBeat, (position - std::floor (position)) * gridBeats * samplesPerBeat);
-    }
-    else
-    {
-        engine.setSnap (false, 0.0, 0.0);
-    }
-
     engine.setActive (isOn (loopParam));
 
     // --- Stutter ---
@@ -433,6 +422,10 @@ void LoopRollAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
     gate.setSwing (0.01 * (double) value (stutterSwingParam));
     gate.setActive (isOn (stutterParam));
 
+    // --- Pitch : en demi-tons entiers, ou libre ---
+    const double semitones = (double) value (pitchParam);
+    shifter.setSemitones (isOn (pitchModeParam) ? semitones : std::round (semitones));
+
     // --- Filtre ---
     filter.setFrequency ((double) value (filterCutoffParam));
     filter.setResonance (0.01 * (double) value (filterResonanceParam));
@@ -441,7 +434,7 @@ void LoopRollAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
     filter.setLimiter (isOn (limiterParam));
     filter.setActive (isOn (filterParam));
 
-    // --- Chaîne : stutter et looper dans l'ordre choisi, puis filtre ---
+    // --- Chaîne : stutter et looper dans l'ordre choisi, puis pitch, puis filtre ---
     const auto channels = buffer.getArrayOfWritePointers();
 
     if (value (orderParam) < 0.5f)
@@ -455,6 +448,7 @@ void LoopRollAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juc
         gate.process (channels, numChannels, numSamples);
     }
 
+    shifter.process (channels, numChannels, numSamples);
     filter.process (channels, numChannels, numSamples);
 
     // --- Mélange avec l'entrée ---
@@ -479,6 +473,7 @@ void LoopRollAudioProcessor::processBlockBypassed (juce::AudioBuffer<float>& buf
     // En bypass on repart d'un état propre : pas de vieille boucle rejouée à la réactivation.
     engine.reset();
     gate.reset();
+    shifter.reset();
     filter.reset();
     AudioProcessor::processBlockBypassed (buffer, midi);
 }

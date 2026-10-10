@@ -3,6 +3,7 @@
 
 #include "LooperEngine.h"
 #include "OutputFilter.h"
+#include "PitchShifter.h"
 #include "StutterGate.h"
 
 #include <cstdio>
@@ -1247,6 +1248,232 @@ static void testFuzz()
     }
 }
 
+// Fréquence d'un signal, mesurée par ses passages à zéro montants entre "from" et la fin.
+static double measureFrequency (const std::vector<float>& v, int from, double sampleRate)
+{
+    double first = -1.0, last = -1.0;
+    int count = 0;
+
+    for (int i = from + 1; i < (int) v.size(); ++i)
+    {
+        const float before = v[(size_t) (i - 1)], after = v[(size_t) i];
+
+        if (before < 0.0f && after >= 0.0f)
+        {
+            const double crossing = (double) (i - 1) + (double) (before / (before - after));
+            if (first < 0.0) first = crossing; else ++count;
+            last = crossing;
+        }
+    }
+
+    return count > 0 ? count * sampleRate / (last - first) : 0.0;
+}
+
+// Niveau efficace par tranches de "window" échantillons, de "from" à la fin : moyenne, et rapport entre la plus faible et la plus forte.
+struct Level { double mean, steadiness; };
+
+static Level measureLevel (const std::vector<float>& v, int from, int window)
+{
+    double lowest = 1.0e9, highest = 0.0, sum = 0.0;
+    int count = 0;
+
+    for (int start = from; start + window <= (int) v.size(); start += window / 2)
+    {
+        double energy = 0.0;
+        for (int i = start; i < start + window; ++i) energy += (double) v[(size_t) i] * (double) v[(size_t) i];
+        const double rms = std::sqrt (energy / window);
+        lowest = std::min (lowest, rms);
+        highest = std::max (highest, rms);
+        sum += rms;
+        ++count;
+    }
+
+    return { count > 0 ? sum / count : 0.0, highest > 0.0 ? lowest / highest : 0.0 };
+}
+
+static void testPitch()
+{
+    std::printf ("16. Pitch : transposition de tout le son\n");
+    const double pi = 3.14159265358979323846;
+    const int N = 4 * 44100;
+
+    const auto shift = [] (const std::vector<float>& in, double semitones, int blockSize = 256)
+    {
+        PitchShifter shifter;
+        shifter.prepare (kSampleRate, 1);
+        shifter.setSemitones (semitones);
+        return runMono (shifter, in, blockSize, [] (int) {});
+    };
+
+    // À 0 demi-ton, rien ne change, à l'échantillon près.
+    {
+        PitchShifter shifter;
+        shifter.prepare (kSampleRate, 1);
+        const auto in = makeNoise (30000, 50);
+        const auto out = runMono (shifter, in, 256, [] (int) {});
+        CHECK (out == in, "pitch a 0 : le signal devrait passer tel quel");
+        CHECK (! shifter.isActive(), "pitch a 0 : le pitch ne devrait pas travailler");
+    }
+
+    // Sinus : la hauteur est exacte (demi-tons entiers ou non), le niveau reste stable, aucun clic.
+    struct Case { double frequency, semitones; };
+
+    for (const auto c : { Case { 440.0, 12.0 }, Case { 440.0, -12.0 }, Case { 440.0, 7.0 }, Case { 440.0, -5.0 }, Case { 440.0, 0.5 }, Case { 440.0, -0.37 },
+                          Case { 55.0, 12.0 }, Case { 55.0, 3.0 }, Case { 55.0, 0.5 }, Case { 55.0, -7.0 }, Case { 55.0, -12.0 },
+                          Case { 41.2, 5.0 }, Case { 41.2, -2.0 }, Case { 3000.0, 4.0 }, Case { 3000.0, -9.0 } })
+    {
+        const float amplitude = 0.5f;
+        const auto out = shift (makeSine (N, c.frequency, amplitude), c.semitones);
+        const double expected = c.frequency * std::pow (2.0, c.semitones / 12.0);
+        const double measured = measureFrequency (out, N / 4, kSampleRate);
+        const auto level = measureLevel (out, N / 4, (int) std::lround (4.0 * kSampleRate / expected));
+        const double steepest = 2.0 * amplitude * std::sin (pi * expected / kSampleRate);
+
+        CHECK (std::abs (measured / expected - 1.0) < 0.003, "sinus %.1f Hz %+.2f st : %.2f Hz au lieu de %.2f", c.frequency, c.semitones, measured, expected);
+        CHECK (std::abs (level.mean / (amplitude / std::sqrt (2.0)) - 1.0) < 0.03, "sinus %.1f Hz %+.2f st : niveau x%.3f", c.frequency, c.semitones, level.mean / (amplitude / std::sqrt (2.0)));
+        CHECK (level.steadiness > 0.9, "sinus %.1f Hz %+.2f st : le niveau ondule (%.2f)", c.frequency, c.semitones, level.steadiness);
+        CHECK (maxStep (out, N / 4, N) < 1.2f * (float) steepest, "sinus %.1f Hz %+.2f st : clic (%.4f pour une pente de %.4f)", c.frequency, c.semitones, maxStep (out, N / 4, N), steepest);
+    }
+
+    // Basse riche en harmoniques : le niveau ne se creuse pas aux raccords, et le son reste périodique à la bonne hauteur.
+    for (const double semitones : { 12.0, 1.0, -3.0, -12.0 })
+    {
+        std::vector<float> in ((size_t) N);
+
+        for (int i = 0; i < N; ++i)
+        {
+            double v = 0.0;
+            for (int h = 1; h <= 20; ++h) v += std::sin (2.0 * pi * 50.0 * h * i / kSampleRate + 0.3 * h) / std::pow ((double) h, 1.2);
+            in[(size_t) i] = (float) (0.3 * v);
+        }
+
+        const auto out = shift (in, semitones);
+        const double period = kSampleRate / (50.0 * std::pow (2.0, semitones / 12.0));
+        const auto before = measureLevel (in, N / 4, (int) std::lround (2.0 * kSampleRate / 50.0));
+        const auto after = measureLevel (out, N / 4, (int) std::lround (2.0 * period));
+
+        // Ressemblance du son avec lui-même, une période plus loin.
+        const int lag = (int) std::lround (period);
+        double dot = 0.0, a = 0.0, b = 0.0;
+        for (int i = N / 2; i < N / 2 + 8820; ++i) { const double x = out[(size_t) i], y = out[(size_t) (i + lag)]; dot += x * y; a += x * x; b += y * y; }
+
+        CHECK (std::abs (after.mean / before.mean - 1.0) < 0.03, "basse %+.0f st : niveau x%.3f", semitones, after.mean / before.mean);
+        CHECK (after.steadiness > 0.9, "basse %+.0f st : le niveau ondule (%.2f)", semitones, after.steadiness);
+        CHECK (dot / std::sqrt (a * b) > 0.9, "basse %+.0f st : la periode attendue n'y est pas (%.3f)", semitones, dot / std::sqrt (a * b));
+    }
+
+    // Bruit : le niveau est à peu près conservé (les raccords ne peuvent pas être en phase).
+    for (const double semitones : { 12.0, 3.0, -3.0, -12.0 })
+    {
+        const auto in = makeNoise (N, 51);
+        const auto out = shift (in, semitones);
+        const double ratio = measureLevel (out, N / 4, 4410).mean / measureLevel (in, N / 4, 4410).mean;
+        CHECK (ratio > 0.8 && ratio < 1.1, "bruit %+.0f st : niveau x%.3f", semitones, ratio);
+    }
+
+    // Enclenchement en cours de route puis retour à 0 : pas de clic, et le direct revient intact.
+    {
+        const auto in = makeSine (N, 220.0, 0.8f);
+        PitchShifter shifter;
+        shifter.prepare (kSampleRate, 1);
+        const auto out = runMono (shifter, in, 256, [&] (int start) { shifter.setSemitones (start >= 20480 && start < 61440 ? 5.0 : 0.0); });
+
+        bool before = true, after = true;
+        for (int t = 0; t < 20480; ++t) before = before && out[(size_t) t] == in[(size_t) t];
+        for (int t = 61440 + 441; t < N; ++t) after = after && out[(size_t) t] == in[(size_t) t];
+        const double steepest = 2.0 * 0.8 * std::sin (pi * 220.0 * std::pow (2.0, 5.0 / 12.0) / kSampleRate);
+
+        CHECK (before, "le son est modifie avant que le pitch quitte 0");
+        CHECK (after, "le direct ne revient pas intact quand le pitch revient a 0");
+        CHECK (std::abs (measureFrequency (std::vector<float> (out.begin() + 30000, out.begin() + 60000), 0, kSampleRate) / (220.0 * std::pow (2.0, 5.0 / 12.0)) - 1.0) < 0.005, "pitch enclenche en route : mauvaise hauteur");
+        CHECK (maxStep (out, 0, N) < 1.5f * (float) steepest, "clic a l'enclenchement ou au retour (%.4f pour une pente de %.4f)", maxStep (out, 0, N), steepest);
+    }
+
+    // Stéréo : deux canaux identiques le restent ; deux canaux différents sont transposés tous les deux.
+    // (Les deux notes sont à la douzième : un raccord ne peut tomber en phase que pour des sons de même période.)
+    {
+        const auto left = makeSine (N, 330.0, 0.5f), right = makeSine (N, 990.0, 0.4f);
+        std::vector<float> a = left, b = left, c = left, d = right;
+        PitchShifter same, different;
+        same.prepare (kSampleRate, 2);
+        different.prepare (kSampleRate, 2);
+        same.setSemitones (-4.0);
+        different.setSemitones (-4.0);
+
+        for (int start = 0; start < N; start += 200)
+        {
+            float* x[2] = { a.data() + start, b.data() + start };
+            float* y[2] = { c.data() + start, d.data() + start };
+            same.process (x, 2, std::min (200, N - start));
+            different.process (y, 2, std::min (200, N - start));
+        }
+
+        const double ratio = std::pow (2.0, -4.0 / 12.0);
+        CHECK (a == b, "stereo : deux canaux identiques devraient le rester");
+        CHECK (std::abs (measureFrequency (c, N / 4, kSampleRate) / (330.0 * ratio) - 1.0) < 0.01, "stereo : canal gauche a %.1f Hz", measureFrequency (c, N / 4, kSampleRate));
+        CHECK (std::abs (measureFrequency (d, N / 4, kSampleRate) / (990.0 * ratio) - 1.0) < 0.01, "stereo : canal droit a %.1f Hz", measureFrequency (d, N / 4, kSampleRate));
+    }
+
+    // Automation : un balayage continu de -12 à +12 puis retour, par petits blocs, reste propre.
+    {
+        const auto in = makeSine (N, 110.0, 0.8f);
+        PitchShifter shifter;
+        shifter.prepare (kSampleRate, 1);
+        const auto out = runMono (shifter, in, 64, [&] (int start)
+        {
+            const double position = (double) start / N;
+            shifter.setSemitones (position < 0.5 ? -12.0 + 48.0 * position : 12.0 - 48.0 * (position - 0.5));
+        });
+
+        float peak = 0.0f;
+        bool finite = true;
+        for (const float v : out) { finite = finite && std::isfinite (v); peak = std::max (peak, std::abs (v)); }
+        const double steepest = 2.0 * 0.8 * std::sin (pi * 220.0 / kSampleRate);
+
+        CHECK (finite && peak < 1.0f, "balayage : sortie invalide (crete %.3f)", peak);
+        CHECK (maxStep (out, 0, N) < 1.5f * (float) steepest, "balayage : clic (%.4f pour une pente de %.4f)", maxStep (out, 0, N), steepest);
+        CHECK (measureLevel (out, 4410, 4410).steadiness > 0.7, "balayage : le niveau se creuse (%.2f)", measureLevel (out, 4410, 4410).steadiness);
+    }
+
+    // Fuzz : réglages et tailles de blocs au hasard, valeurs absurdes comprises.
+    {
+        std::mt19937 rng (4321);
+        std::uniform_real_distribution<float> sig (-1.0f, 1.0f);
+        std::uniform_real_distribution<double> u (0.0, 1.0);
+
+        for (double sr : { 22050.0, 44100.0, 48000.0, 96000.0, 192000.0 })
+        {
+            PitchShifter shifter;
+            shifter.prepare (sr, 2);
+            std::vector<float> l (4096), r (4096);
+            bool ok = true;
+
+            for (int block = 0; block < 4000; ++block)
+            {
+                const int n = 1 + (int) (u (rng) * (block % 7 == 0 ? 4095 : 300));
+                const bool quiet = block % 97 > 80;   // des passages de silence
+                for (int i = 0; i < n; ++i) { l[(size_t) i] = quiet ? 0.0f : sig (rng); r[(size_t) i] = quiet ? 0.0f : sig (rng); }
+
+                const double pick = u (rng);
+                if (pick < 0.15)       shifter.setSemitones (0.0);
+                else if (pick < 0.45)  shifter.setSemitones (u (rng) * 60.0 - 30.0);
+                else if (pick < 0.47)  shifter.setSemitones (std::nan (""));
+                else if (pick < 0.49)  shifter.setSemitones (u (rng) < 0.5 ? 1.0e30 : -1.0e30);
+                if (u (rng) < 0.002) shifter.reset();
+
+                float* io[2] = { l.data(), r.data() };
+                shifter.process (io, 2, n);
+
+                for (int i = 0; i < n; ++i)
+                    ok = ok && std::isfinite (l[(size_t) i]) && std::isfinite (r[(size_t) i])
+                            && std::abs (l[(size_t) i]) <= 2.5f && std::abs (r[(size_t) i]) <= 2.5f;
+            }
+
+            CHECK (ok, "pitch : sortie invalide a %.0f Hz", sr);
+        }
+    }
+}
+
 int main()
 {
     testPassthrough();
@@ -1263,6 +1490,7 @@ int main()
     testRepeats();
     testSnap();
     testFuzz();
+    testPitch();
 
     std::printf (failures == 0 ? "\nTOUS LES TESTS PASSENT\n" : "\n%d ECHEC(S)\n", failures);
     return failures == 0 ? 0 : 1;

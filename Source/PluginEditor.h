@@ -175,17 +175,17 @@ private:
 
     bool loopOn = false, refreshOn = false, stutterOn = false, filterOn = false;
     bool loopSync = true, refreshSync = true, stutterSync = true;
-    bool momentary = false, momentaryDown = false, loopFirstInChain = true;
+    bool pitchInSemitones = true;
     int filterType = 0;
     bool steepFilter = false;
 
     // Les potards de durée sont faits de deux sliders superposés, un par mode : ms en FREE, divisions en SYNC.
     juce::Slider timeKnob, divisionKnob, refreshTimeKnob, refreshDivisionKnob, stutterTimeKnob, stutterDivisionKnob, cutoffKnob;
-    juce::Slider fadeInKnob, fadeOutKnob, pitchKnob, decayKnob, mixKnob, shapeKnob, depthKnob, swingKnob, resonanceKnob;
+    juce::Slider fadeInKnob, fadeOutKnob, mixKnob, pitchKnob, shapeKnob, depthKnob, swingKnob, resonanceKnob;
     juce::Label valueLabels[4];
     juce::TextButton loopButton { "LOOP" }, refreshButton { "REFRESH" }, stutterButton { "STUTTER" }, filterButton { "FILTER" };
-    juce::TextButton reverseButton { "REV" }, preButton { "PRE" }, snapButton { "SNAP" }, momentaryButton { "MOMENT" }, limiterButton { "LIMITER" };
-    ChoiceSwitch loopMode, refreshMode, stutterMode, filterTypeSwitch, filterSlope, chainOrder;
+    juce::TextButton reverseButton { "REVERSE" }, limiterButton { "LIMITER" };
+    ChoiceSwitch loopMode, refreshMode, stutterMode, filterTypeSwitch, filterSlope, chainOrder, pitchMode;
     FeelSwitch loopFeel, refreshFeel, stutterFeel;
     StutterStepGrid stepGrid;
 
@@ -193,7 +193,7 @@ private:
     std::vector<std::unique_ptr<APVTS::SliderAttachment>> sliderAttachments;
     std::vector<std::unique_ptr<APVTS::ButtonAttachment>> buttonAttachments;
     std::vector<std::unique_ptr<juce::ParameterAttachment>> stateWatchers;
-    std::unique_ptr<juce::ParameterAttachment> loopAttachment;
+    std::unique_ptr<juce::ParameterAttachment> loopAttachment, pitchAttachment;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LoopRollAudioProcessorEditor)
 };

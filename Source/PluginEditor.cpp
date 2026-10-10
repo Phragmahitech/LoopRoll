@@ -24,7 +24,7 @@ namespace
     juce::Rectangle<int> switchArea (int column, int offset, int width)   { return { columnX (column) + offset, 318, width, 24 }; }
     juce::Rectangle<int> buttonArea (int column)        { return { columnX (column), 364, columnWidth, 52 }; }
     juce::Rectangle<int> panelArea (int column)         { return { columnX (column), 430, columnWidth, 166 }; }
-    juce::Rectangle<int> displayArea (int column, int width = panelInnerWidth)   { return { columnX (column) + panelInset, 458, width, 44 }; }
+    juce::Rectangle<int> displayArea (int column)       { return { columnX (column) + panelInset, 458, panelInnerWidth, 44 }; }
 
     /** Petit potard numéro "slot" parmi "numSlots" répartis sur la largeur du panneau. */
     juce::Rectangle<int> miniKnobArea (int column, int slot, int numSlots)
@@ -33,10 +33,10 @@ namespace
         return { centre - 20, 514, 40, 40 };
     }
 
-    /** Petits interrupteurs du panneau LOOP : deux colonnes, deux rangées, à droite de l'afficheur. */
-    juce::Rectangle<int> smallToggleArea (int column, int gridColumn, int gridRow)
+    /** Interrupteur à droite des petits potards d'un panneau (REVERSE, mode du pitch, LIMITER). */
+    juce::Rectangle<int> panelSwitchArea (int column, int offset)
     {
-        return { columnX (column) + 118 + gridColumn * 61, 458 + gridRow * 24, 57, 20 };
+        return { columnX (column) + offset, 522, columnWidth - panelInset - offset, 24 };
     }
 
     juce::Path polyline (std::initializer_list<Pt> points, bool closed = false)
@@ -638,9 +638,8 @@ LoopRollAudioProcessorEditor::LoopRollAudioProcessorEditor (LoopRollAudioProcess
     // Petits potards des panneaux du bas
     fadeInKnob.setName ("IN");
     fadeOutKnob.setName ("OUT");
-    pitchKnob.setName ("PITCH");
-    decayKnob.setName ("DECAY");
     mixKnob.setName ("MIX");
+    pitchKnob.setName ("PITCH");
     shapeKnob.setName ("SHAPE");
     depthKnob.setName ("DEPTH");
     swingKnob.setName ("SWING");
@@ -648,9 +647,8 @@ LoopRollAudioProcessorEditor::LoopRollAudioProcessorEditor (LoopRollAudioProcess
 
     configureMiniKnob (fadeInKnob, Ids::fadeInId, 0, 0, 4);
     configureMiniKnob (fadeOutKnob, Ids::fadeOutId, 0, 1, 4);
-    configureMiniKnob (pitchKnob, Ids::pitchId, 0, 2, 4);
-    configureMiniKnob (decayKnob, Ids::decayId, 0, 3, 4);
     configureMiniKnob (mixKnob, Ids::mixId, 1, 0, 4);
+    configureMiniKnob (pitchKnob, Ids::pitchId, 1, 1, 4);
     configureMiniKnob (shapeKnob, Ids::stutterShapeId, 2, 0, 3);
     configureMiniKnob (depthKnob, Ids::stutterDepthId, 2, 1, 3);
     configureMiniKnob (swingKnob, Ids::stutterSwingId, 2, 2, 3);
@@ -659,7 +657,7 @@ LoopRollAudioProcessorEditor::LoopRollAudioProcessorEditor (LoopRollAudioProcess
     for (int column = 0; column < numColumns; ++column)
         configureValueLabel (valueLabels[column], column);
 
-    // LOOP : bascule, ou appui maintenu en mode momentané.
+    // Grands boutons : des bascules. Les lumières de chaque module suivent son état.
     configureBigButton (loopButton, 0);
     loopButton.setComponentID (Ids::loopId);
     loopAttachment = std::make_unique<juce::ParameterAttachment> (*apvts.getParameter (Ids::loopId), [this] (float value)
@@ -669,26 +667,8 @@ LoopRollAudioProcessorEditor::LoopRollAudioProcessorEditor (LoopRollAudioProcess
         repaint();
     });
 
-    loopButton.onClick = [this]
-    {
-        if (! momentary)
-            loopAttachment->setValueAsCompleteGesture (loopOn ? 0.0f : 1.0f);
-    };
+    loopButton.onClick = [this] { loopAttachment->setValueAsCompleteGesture (loopOn ? 0.0f : 1.0f); };
 
-    loopButton.onStateChange = [this]
-    {
-        const bool down = loopButton.isDown();
-
-        if (down == momentaryDown)
-            return;
-
-        momentaryDown = down;
-
-        if (momentary)   // la boucle tourne tant que le bouton est enfoncé
-            loopAttachment->setValueAsCompleteGesture (down ? 1.0f : 0.0f);
-    };
-
-    // Les autres grands boutons sont des bascules. Les lumières de chaque module suivent son état.
     configureToggle (refreshButton, Ids::refreshId, 1, [this] (bool on)
     {
         refreshOn = on;
@@ -718,19 +698,25 @@ LoopRollAudioProcessorEditor::LoopRollAudioProcessorEditor (LoopRollAudioProcess
     configureFeel (stutterFeel, Ids::stutterFeelId, 2);
 
     // Panneaux du bas
-    configureSmallToggle (reverseButton, Ids::reverseId, smallToggleArea (0, 0, 0));
-    configureSmallToggle (preButton, Ids::preId, smallToggleArea (0, 1, 0));
-    configureSmallToggle (snapButton, Ids::snapId, smallToggleArea (0, 0, 1));
-    configureSmallToggle (momentaryButton, Ids::momentaryId, smallToggleArea (0, 1, 1));
-    configureSmallToggle (limiterButton, Ids::limiterId, { columnX (3) + 100, 522, 136, 24 });
+    configureSmallToggle (reverseButton, Ids::reverseId, panelSwitchArea (0, 130));
+    configureSmallToggle (limiterButton, Ids::limiterId, panelSwitchArea (3, 100));
 
-    configureSwitch (chainOrder, Ids::orderId, { "STUTTER > LOOP", "LOOP > STUTTER" }, displayArea (1), true, false, [this] (int choice) { loopFirstInChain = choice == 1; repaint(); });
+    // Pitch : par demi-tons (le potard se pose sur le demi-ton le plus proche quand on le lâche) ou libre.
+    configureSwitch (pitchMode, Ids::pitchModeId, { "SEMI", "FREE" }, panelSwitchArea (1, 130), false, true, [this] (int choice) { pitchInSemitones = choice == 0; repaint(); });
+    pitchAttachment = std::make_unique<juce::ParameterAttachment> (*apvts.getParameter (Ids::pitchId), [] (float) {});
+
+    pitchKnob.onDragEnd = [this]
+    {
+        const auto value = (float) pitchKnob.getValue();
+
+        if (pitchInSemitones && std::abs (value - std::round (value)) > 0.001f)
+            pitchAttachment->setValueAsCompleteGesture (std::round (value));
+    };
+
+    configureSwitch (chainOrder, Ids::orderId, { "STUTTER > LOOP", "LOOP > STUTTER" }, displayArea (1), true, false, [this] (int) { repaint(); });
 
     addAndMakeVisible (stepGrid);
     stepGrid.setBounds (displayArea (2));
-
-    stateWatchers.push_back (std::make_unique<juce::ParameterAttachment> (*apvts.getParameter (Ids::momentaryId),
-                                                                          [this] (float value) { momentary = value > 0.5f; }));
 
     // Tout est en place : on aligne l'interface sur les paramètres.
     loopAttachment->sendInitialUpdate();
@@ -738,7 +724,7 @@ LoopRollAudioProcessorEditor::LoopRollAudioProcessorEditor (LoopRollAudioProcess
     for (auto& watcher : stateWatchers)
         watcher->sendInitialUpdate();
 
-    for (auto* selector : { &loopMode, &refreshMode, &stutterMode, &filterTypeSwitch, &filterSlope, &chainOrder })
+    for (auto* selector : { &loopMode, &refreshMode, &stutterMode, &filterTypeSwitch, &filterSlope, &chainOrder, &pitchMode })
         selector->attachment->sendInitialUpdate();
 
     for (auto* feel : { &loopFeel, &refreshFeel, &stutterFeel })
@@ -1093,7 +1079,7 @@ void LoopRollAudioProcessorEditor::paintBackground (juce::Graphics& g)
     }
 
     // Écrans des panneaux : enveloppe de la boucle, motif du stutter, réponse du filtre
-    LF::drawScreen (g, displayArea (0, 96).toFloat(), 6.0f);
+    LF::drawScreen (g, displayArea (0).toFloat(), 6.0f);
     LF::drawScreen (g, stepGrid.getBounds().toFloat(), 6.0f);
     LF::drawScreen (g, displayArea (3).toFloat(), 6.0f);
 
@@ -1225,7 +1211,7 @@ void LoopRollAudioProcessorEditor::paintModules (juce::Graphics& g)
 {
     // --- Fondus de la boucle : forme de l'enveloppe sur un passage ---
     {
-        const auto plot = displayArea (0, 96).toFloat().reduced (9.0f, 8.0f);
+        const auto plot = displayArea (0).toFloat().reduced (9.0f, 8.0f);
         const float fadeIn = (float) fadeInKnob.getValue() * 0.01f;
         const float fadeOut = (float) fadeOutKnob.getValue() * 0.01f;
         const auto at = [plot] (float position, float level) { return Pt { plot.getX() + position * plot.getWidth(), plot.getBottom() - level * plot.getHeight() }; };
@@ -1274,21 +1260,26 @@ void LoopRollAudioProcessorEditor::paintModules (juce::Graphics& g)
         plotCurve (g, plot, curve);
     }
 
-    // --- Chaîne : rappel du trajet du son, à côté du potard de mélange ---
+    // --- Chaîne : rappel de la suite du trajet du son (l'ordre du looper et du stutter se lit sur l'interrupteur) ---
     {
-        const auto area = juce::Rectangle<int> (columnX (1) + 74, 516, 162, 40);
+        const auto area = panelSwitchArea (1, 130).translated (0, 30).withHeight (30);
         g.setColour (LF::dimInk());
         g.setFont (lookAndFeel.font (9.0f, false, 0.1f));
-        g.drawText (loopFirstInChain ? "LOOP  >  STUTTER" : "STUTTER  >  LOOP", area.withHeight (20), juce::Justification::centredLeft, false);
-        g.drawText (">  FILTER  >  MIX", area.withTrimmedTop (20), juce::Justification::centredLeft, false);
+        g.drawText ("> PITCH > FILTER", area.withHeight (15), juce::Justification::centredLeft, false);
+        g.drawText ("> MIX", area.withTrimmedTop (15), juce::Justification::centredLeft, false);
     }
 
     // Valeurs des petits potards (leurs noms sont dans le fond)
     g.setColour (LF::ink());
     g.setFont (lookAndFeel.font (10.5f, true));
 
-    for (auto* knob : { &fadeInKnob, &fadeOutKnob, &pitchKnob, &decayKnob, &mixKnob, &shapeKnob, &depthKnob, &swingKnob, &resonanceKnob })
-        g.drawText (knob->getTextFromValue (knob->getValue()),
-                    juce::Rectangle<int> (60, 12).withCentre ({ knob->getBounds().getCentreX(), knob->getBottom() + 20 }),
+    for (auto* knob : { &fadeInKnob, &fadeOutKnob, &mixKnob, &pitchKnob, &shapeKnob, &depthKnob, &swingKnob, &resonanceKnob })
+    {
+        // En mode demi-tons, le pitch affiché est celui qu'on entend : arrondi au demi-ton.
+        const double value = (knob == &pitchKnob && pitchInSemitones) ? std::round (knob->getValue()) : knob->getValue();
+
+        g.drawText (knob->getTextFromValue (value),
+                    juce::Rectangle<int> (70, 12).withCentre ({ knob->getBounds().getCentreX(), knob->getBottom() + 20 }),
                     juce::Justification::centred, false);
+    }
 }

@@ -41,21 +41,19 @@ LOOP           Allume : capture l'audio a partir de cet instant puis le repete.
   LENGTH       Duree de la boucle. Tourner a droite raccourcit.
   IN / OUT     Fondu d'entree et de sortie sur chaque passage de la boucle,
                en % de sa duree. 0 % = boucle brute.
-  PITCH        Transposition ajoutee a chaque repetition (demi-tons).
-  DECAY        Baisse de niveau a chaque repetition.
-  REV          Repetitions lues a l'envers.
-  PRE          La boucle repete tout de suite la tranche qui vient de jouer.
-  SNAP         Depart cale sur la grille du projet (transport en lecture).
-  MOMENT       Le bouton LOOP ne joue que tant qu'il est enfonce.
+  REVERSE      Repetitions lues a l'envers.
 
 REFRESH        Allume : la boucle est recapturee a intervalle regulier.
                N'agit que si LOOP est allume.
   EVERY        Intervalle entre deux recaptures. Tourner a droite = plus frequent.
 
-CHAIN          Ordre du stutter et du looper (le filtre vient toujours apres) :
+CHAIN          Ordre du stutter et du looper (le pitch puis le filtre viennent apres) :
                LOOP > STUTTER : la boucle repete le son brut, le gate hache le resultat.
                STUTTER > LOOP : le son est hache, puis la boucle repete ce son hache.
   MIX          Dry / wet sur tout le plugin.
+  PITCH        Transpose tout le son qui sort du looper et du stutter, de -12 a
+               +12 demi-tons, sans changer sa duree. A 0, le son passe tel quel.
+               SEMI : par demi-tons. FREE : en continu, au centieme de demi-ton.
 
 STUTTER        Gate rythmique a 16 pas : chaque pas ouvre le son puis le referme
                en dent de scie descendante.

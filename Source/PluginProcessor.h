@@ -4,6 +4,7 @@
 
 #include "LooperEngine.h"
 #include "OutputFilter.h"
+#include "PitchShifter.h"
 #include "StutterGate.h"
 
 class LoopRollAudioProcessor final : public juce::AudioProcessor
@@ -38,15 +39,14 @@ public:
     static constexpr const char* stutterFeelId     = "stutterFeel";
     static constexpr const char* pitchId           = "pitch";
     static constexpr const char* reverseId         = "reverse";
-    static constexpr const char* preId             = "pre";
-    static constexpr const char* decayId           = "decay";
-    static constexpr const char* snapId            = "snap";
-    static constexpr const char* momentaryId       = "momentary";
     static constexpr const char* mixId             = "mix";
     static constexpr const char* stutterDepthId    = "stutterDepth";
     static constexpr const char* stutterSwingId    = "stutterSwing";
     static constexpr const char* filterSlopeId     = "filterSlope";
     static constexpr const char* limiterId         = "limiter";
+
+    // Depuis la v1.2 ("pre", "decay", "snap" et "momentary" de la v1.1 n'existent plus)
+    static constexpr const char* pitchModeId       = "pitchMode";
 
     /** Identifiant d'un pas du motif du stutter : "stutterStep1" à "stutterStep16". */
     static juce::String getStepId (int index)       { return "stutterStep" + juce::String (index + 1); }
@@ -65,6 +65,9 @@ public:
     // et en SYNC sa propre variante : normale, triolet (x 2/3) ou pointée (x 3/2).
     static const juce::StringArray& getFeelNames();
     static double getFeelFactor (int index);
+
+    /** Texte d'une transposition : "+3 st", ou "+3.25 st" quand elle ne tombe pas sur un demi-ton. */
+    static juce::String pitchToText (float semitones);
 
     /** Divisions de la boucle et du stutter en mode sync, de la plus longue à la plus courte. */
     static const juce::StringArray& getDivisionNames();
@@ -112,9 +115,10 @@ public:
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
-    // Chaîne : [stutter et looper, dans l'ordre choisi], filtre (et son limiteur), puis mélange dry / wet.
+    // Chaîne : [stutter et looper, dans l'ordre choisi], pitch, filtre (et son limiteur), puis mélange dry / wet.
     LooperEngine engine;
     StutterGate gate;
+    PitchShifter shifter;
     OutputFilter filter;
 
     std::atomic<float>* loopParam = nullptr;
@@ -142,14 +146,12 @@ private:
     std::atomic<float>* stutterFeelParam = nullptr;
     std::atomic<float>* pitchParam = nullptr;
     std::atomic<float>* reverseParam = nullptr;
-    std::atomic<float>* preParam = nullptr;
-    std::atomic<float>* decayParam = nullptr;
-    std::atomic<float>* snapParam = nullptr;
     std::atomic<float>* mixParam = nullptr;
     std::atomic<float>* stutterDepthParam = nullptr;
     std::atomic<float>* stutterSwingParam = nullptr;
     std::atomic<float>* filterSlopeParam = nullptr;
     std::atomic<float>* limiterParam = nullptr;
+    std::atomic<float>* pitchModeParam = nullptr;
     std::atomic<float>* stepParams[numStutterSteps] = {};
 
     double currentSampleRate = 44100.0;
