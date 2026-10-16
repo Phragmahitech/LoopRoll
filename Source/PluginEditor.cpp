@@ -617,8 +617,9 @@ void StutterStepGrid::paint (juce::Graphics& g)
 }
 
 //==============================================================================
-LoopRollAudioProcessorEditor::LoopRollAudioProcessorEditor (LoopRollAudioProcessor& p)
-    : AudioProcessorEditor (&p), audioProcessor (p), stepGrid (p.apvts)
+LoopRollFacade::LoopRollFacade (LoopRollAudioProcessor& p)
+    : audioProcessor (p), stepGrid (p.apvts),
+      presetBar (p.presets, [this] (float size, bool bold, float tracking) { return lookAndFeel.font (size, bold, tracking); })
 {
     setLookAndFeel (&lookAndFeel);
 
@@ -731,14 +732,19 @@ LoopRollAudioProcessorEditor::LoopRollAudioProcessorEditor (LoopRollAudioProcess
         feel->attachment->sendInitialUpdate();
 
     setSize (editorWidth, editorHeight);
+
+    // Presets et taille de la fenêtre, dans l'en-tête, à gauche du numéro de version
+    addAndMakeVisible (presetBar);
+    presetBar.setBounds (editorWidth - 112 - phragma::PresetBar::idealWidth, 26, phragma::PresetBar::idealWidth, 28);
+    presetBar.attachSavePanelTo (*this);
 }
 
-LoopRollAudioProcessorEditor::~LoopRollAudioProcessorEditor()
+LoopRollFacade::~LoopRollFacade()
 {
     setLookAndFeel (nullptr);
 }
 
-void LoopRollAudioProcessorEditor::configureMainKnob (juce::Slider& knob, const char* parameterId, int column)
+void LoopRollFacade::configureMainKnob (juce::Slider& knob, const char* parameterId, int column)
 {
     addChildComponent (knob);
     knob.setComponentID (parameterId);
@@ -752,7 +758,7 @@ void LoopRollAudioProcessorEditor::configureMainKnob (juce::Slider& knob, const 
     sliderAttachments.push_back (std::make_unique<APVTS::SliderAttachment> (audioProcessor.apvts, parameterId, knob));
 }
 
-void LoopRollAudioProcessorEditor::configureMiniKnob (juce::Slider& knob, const char* parameterId, int column, int slot, int numSlots)
+void LoopRollFacade::configureMiniKnob (juce::Slider& knob, const char* parameterId, int column, int slot, int numSlots)
 {
     addAndMakeVisible (knob);
     knob.setComponentID (parameterId);
@@ -767,7 +773,7 @@ void LoopRollAudioProcessorEditor::configureMiniKnob (juce::Slider& knob, const 
     sliderAttachments.push_back (std::make_unique<APVTS::SliderAttachment> (audioProcessor.apvts, parameterId, knob));
 }
 
-void LoopRollAudioProcessorEditor::configureValueLabel (juce::Label& label, int column)
+void LoopRollFacade::configureValueLabel (juce::Label& label, int column)
 {
     addAndMakeVisible (label);
     label.setJustificationType (juce::Justification::centredRight);
@@ -783,7 +789,7 @@ void LoopRollAudioProcessorEditor::configureValueLabel (juce::Label& label, int 
     };
 }
 
-void LoopRollAudioProcessorEditor::configureBigButton (juce::TextButton& button, int column)
+void LoopRollFacade::configureBigButton (juce::TextButton& button, int column)
 {
     addAndMakeVisible (button);
     button.setWantsKeyboardFocus (false);
@@ -792,7 +798,7 @@ void LoopRollAudioProcessorEditor::configureBigButton (juce::TextButton& button,
     button.setBounds (buttonArea (column));
 }
 
-void LoopRollAudioProcessorEditor::configureToggle (juce::TextButton& button, const char* parameterId, int column,
+void LoopRollFacade::configureToggle (juce::TextButton& button, const char* parameterId, int column,
                                                     std::function<void (bool)> onChange)
 {
     configureBigButton (button, column);
@@ -808,7 +814,7 @@ void LoopRollAudioProcessorEditor::configureToggle (juce::TextButton& button, co
                                                                           }));
 }
 
-void LoopRollAudioProcessorEditor::configureSmallToggle (juce::TextButton& button, const char* parameterId, juce::Rectangle<int> area)
+void LoopRollFacade::configureSmallToggle (juce::TextButton& button, const char* parameterId, juce::Rectangle<int> area)
 {
     addAndMakeVisible (button);
     button.setComponentID (parameterId);
@@ -821,7 +827,7 @@ void LoopRollAudioProcessorEditor::configureSmallToggle (juce::TextButton& butto
     buttonAttachments.push_back (std::make_unique<APVTS::ButtonAttachment> (audioProcessor.apvts, parameterId, button));
 }
 
-void LoopRollAudioProcessorEditor::configureSwitch (ChoiceSwitch& selector, const char* parameterId, const juce::StringArray& texts,
+void LoopRollFacade::configureSwitch (ChoiceSwitch& selector, const char* parameterId, const juce::StringArray& texts,
                                                     juce::Rectangle<int> area, bool stacked, bool tiny, std::function<void (int)> onChange)
 {
     const int count = texts.size();
@@ -872,7 +878,7 @@ void LoopRollAudioProcessorEditor::configureSwitch (ChoiceSwitch& selector, cons
         selector.buttons.getUnchecked (i)->onClick = [attachment, i] { attachment->setValueAsCompleteGesture ((float) i); };
 }
 
-void LoopRollAudioProcessorEditor::configureFeel (FeelSwitch& feel, const char* parameterId, int column)
+void LoopRollFacade::configureFeel (FeelSwitch& feel, const char* parameterId, int column)
 {
     for (auto* button : { &feel.triplet, &feel.dotted })
     {
@@ -906,7 +912,7 @@ void LoopRollAudioProcessorEditor::configureFeel (FeelSwitch& feel, const char* 
     feel.dotted.onClick = [state] { state->attachment->setValueAsCompleteGesture (state->value == 2 ? 0.0f : 2.0f); };
 }
 
-juce::Slider& LoopRollAudioProcessorEditor::activeKnob (int column)
+juce::Slider& LoopRollFacade::activeKnob (int column)
 {
     switch (column)
     {
@@ -917,12 +923,12 @@ juce::Slider& LoopRollAudioProcessorEditor::activeKnob (int column)
     }
 }
 
-bool LoopRollAudioProcessorEditor::isSynced (int column) const
+bool LoopRollFacade::isSynced (int column) const
 {
     return column == 0 ? loopSync : column == 1 ? refreshSync : column == 2 && stutterSync;
 }
 
-void LoopRollAudioProcessorEditor::setStandby (int column, bool standby)
+void LoopRollFacade::setStandby (int column, bool standby)
 {
     // Module éteint : son potard passe en veille (il reste réglable) et sa valeur s'estompe.
     for (auto* knob : { &refreshTimeKnob, &refreshDivisionKnob, &stutterTimeKnob, &stutterDivisionKnob, &cutoffKnob })
@@ -932,7 +938,7 @@ void LoopRollAudioProcessorEditor::setStandby (int column, bool standby)
     valueLabels[column].setColour (juce::Label::textColourId, standby ? LF::dimInk() : LF::ink());
 }
 
-void LoopRollAudioProcessorEditor::modesChanged()
+void LoopRollFacade::modesChanged()
 {
     timeKnob.setVisible (! loopSync);
     divisionKnob.setVisible (loopSync);
@@ -960,7 +966,7 @@ void LoopRollAudioProcessorEditor::modesChanged()
     repaint();
 }
 
-void LoopRollAudioProcessorEditor::updateValueLabels()
+void LoopRollFacade::updateValueLabels()
 {
     const FeelSwitch* const feels[] = { &loopFeel, &refreshFeel, &stutterFeel };
 
@@ -976,14 +982,14 @@ void LoopRollAudioProcessorEditor::updateValueLabels()
     }
 }
 
-void LoopRollAudioProcessorEditor::resized() {}
+void LoopRollFacade::resized() {}
 
 //==============================================================================
-void LoopRollAudioProcessorEditor::paint (juce::Graphics& g)
+void LoopRollFacade::paint (juce::Graphics& g)
 {
     // Le fond (plaques, ombres, textes fixes) est coûteux à dessiner : on le garde en image,
     // à la résolution réelle de l'écran, et on ne redessine à chaque fois que ce qui bouge.
-    const float scale = juce::jlimit (1.0f, 4.0f, (float) g.getInternalContext().getPhysicalPixelScaleFactor());
+    const float scale = juce::jlimit (0.5f, 4.0f, (float) g.getInternalContext().getPhysicalPixelScaleFactor());
 
     if (! background.isValid() || std::abs (scale - backgroundScale) > 0.01f)
     {
@@ -1002,7 +1008,7 @@ void LoopRollAudioProcessorEditor::paint (juce::Graphics& g)
     paintModules (g);
 }
 
-void LoopRollAudioProcessorEditor::paintBackground (juce::Graphics& g)
+void LoopRollFacade::paintBackground (juce::Graphics& g)
 {
     const auto full = juce::Rectangle<float> (0.0f, 0.0f, (float) editorWidth, (float) editorHeight);
     const float w = (float) editorWidth, mid = w * 0.5f;
@@ -1132,7 +1138,7 @@ void LoopRollAudioProcessorEditor::paintBackground (juce::Graphics& g)
                 juce::Justification::centredRight, false);
 }
 
-void LoopRollAudioProcessorEditor::paintLights (juce::Graphics& g)
+void LoopRollFacade::paintLights (juce::Graphics& g)
 {
     const bool moduleOn[numColumns] = { loopOn, refreshOn, stutterOn, filterOn };
     const float pipY = (float) footerY + 11.0f;
@@ -1207,7 +1213,7 @@ void LoopRollAudioProcessorEditor::paintLights (juce::Graphics& g)
     }
 }
 
-void LoopRollAudioProcessorEditor::paintModules (juce::Graphics& g)
+void LoopRollFacade::paintModules (juce::Graphics& g)
 {
     // --- Fondus de la boucle : forme de l'enveloppe sur un passage ---
     {
@@ -1282,4 +1288,45 @@ void LoopRollAudioProcessorEditor::paintModules (juce::Graphics& g)
                     juce::Rectangle<int> (70, 12).withCentre ({ knob->getBounds().getCentreX(), knob->getBottom() + 20 }),
                     juce::Justification::centred, false);
     }
+}
+
+//==============================================================================
+LoopRollAudioProcessorEditor::LoopRollAudioProcessorEditor (LoopRollAudioProcessor& p)
+    : AudioProcessorEditor (&p), audioProcessor (p), facade (p)
+{
+    addAndMakeVisible (facade);
+
+    // Taille gardée avec le projet (lue avant de régler les limites : les régler redimensionne déjà la fenêtre).
+    const int savedWidth = (int) audioProcessor.apvts.state.getProperty ("editorWidth", LoopRollFacade::width);
+
+    // Fenêtre redimensionnable de 60 % à 150 %, proportions gardées (coin en bas à droite ou menu de taille).
+    setResizable (true, true);
+    setResizeLimits (juce::roundToInt (LoopRollFacade::width * 0.6), juce::roundToInt (LoopRollFacade::height * 0.6),
+                     juce::roundToInt (LoopRollFacade::width * 1.5), juce::roundToInt (LoopRollFacade::height * 1.5));
+    getConstrainer()->setFixedAspectRatio ((double) LoopRollFacade::width / (double) LoopRollFacade::height);
+
+    facade.getPresetBar().getScale = [this] { return getUiScale(); };
+    facade.getPresetBar().setScale = [this] (float scale) { setUiScale (scale); };
+
+    const int shownWidth = juce::jlimit (juce::roundToInt (LoopRollFacade::width * 0.6), juce::roundToInt (LoopRollFacade::width * 1.5), savedWidth);
+    setSize (shownWidth, juce::roundToInt ((double) shownWidth * LoopRollFacade::height / LoopRollFacade::width));
+    sized = true;
+    resized();
+}
+
+LoopRollAudioProcessorEditor::~LoopRollAudioProcessorEditor() = default;
+
+void LoopRollAudioProcessorEditor::setUiScale (float scale)
+{
+    scale = juce::jlimit (0.6f, 1.5f, scale);
+    setSize (juce::roundToInt ((float) LoopRollFacade::width * scale), juce::roundToInt ((float) LoopRollFacade::height * scale));
+}
+
+void LoopRollAudioProcessorEditor::resized()
+{
+    facade.setTransform (juce::AffineTransform::scale (getUiScale()));
+    facade.getPresetBar().refresh();
+
+    if (sized)
+        audioProcessor.apvts.state.setProperty ("editorWidth", getWidth(), nullptr);
 }

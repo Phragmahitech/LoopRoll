@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PluginProcessor.h"
+#include "PresetBar.h"
 
 /**
     Design clair : plaques à pans coupés, gris clair et blanc, accent en dégradé
@@ -118,11 +119,15 @@ private:
     Chacun a son grand potard, son afficheur, ses interrupteurs, son bouton
     marche / arrêt et un panneau de réglages en dessous.
 */
-class LoopRollAudioProcessorEditor final : public juce::AudioProcessorEditor
+class LoopRollFacade final : public juce::Component
 {
 public:
-    explicit LoopRollAudioProcessorEditor (LoopRollAudioProcessor&);
-    ~LoopRollAudioProcessorEditor() override;
+    static constexpr int width = 1104, height = 642;
+
+    explicit LoopRollFacade (LoopRollAudioProcessor&);
+    ~LoopRollFacade() override;
+
+    phragma::PresetBar& getPresetBar() noexcept     { return presetBar; }
 
     void paint (juce::Graphics&) override;
     void resized() override;
@@ -194,6 +199,33 @@ private:
     std::vector<std::unique_ptr<APVTS::ButtonAttachment>> buttonAttachments;
     std::vector<std::unique_ptr<juce::ParameterAttachment>> stateWatchers;
     std::unique_ptr<juce::ParameterAttachment> loopAttachment, pitchAttachment;
+
+    // Barre des presets et de la taille (en-tête) : déclarée en dernier, détruite en premier.
+    phragma::PresetBar presetBar;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LoopRollFacade)
+};
+
+//==============================================================================
+/** L'éditeur : la façade, mise à l'échelle de la fenêtre (redimensionnable de 60 à 150 %, proportions gardées). */
+class LoopRollAudioProcessorEditor final : public juce::AudioProcessorEditor
+{
+public:
+    explicit LoopRollAudioProcessorEditor (LoopRollAudioProcessor&);
+    ~LoopRollAudioProcessorEditor() override;
+
+    void resized() override;
+
+    LoopRollFacade& getFacade() noexcept                 { return facade; }
+
+    /** Taille de la fenêtre (1 = 100 %). */
+    float getUiScale() const                  { return (float) getWidth() / (float) LoopRollFacade::width; }
+    void setUiScale (float scale);
+
+private:
+    LoopRollAudioProcessor& audioProcessor;
+    LoopRollFacade facade;
+    bool sized = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LoopRollAudioProcessorEditor)
 };

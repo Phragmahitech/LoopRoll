@@ -1,6 +1,7 @@
 #pragma once
 
 #include <juce_audio_processors/juce_audio_processors.h>
+#include "PresetLibrary.h"
 
 #include "LooperEngine.h"
 #include "OutputFilter.h"
@@ -111,6 +112,9 @@ public:
     void setStateInformation (const void* data, int sizeInBytes) override;
 
     juce::AudioProcessorValueTreeState apvts;
+
+    /** Presets de l'utilisateur (fichiers .phgpreset) + DEFAULT (toutes les valeurs par défaut). */
+    PresetLibrary presets;
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();

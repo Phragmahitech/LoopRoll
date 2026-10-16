@@ -32,6 +32,21 @@ Quatre modules côte à côte, chacun avec son grand potard, son bouton marche /
 - LOOP, STUTTER et FILTER s'allument séparément : chacun marche seul ou avec les autres. REFRESH n'agit que quand LOOP est allumé.
 - Mono et stéréo, latence nulle, tous les contrôles sont automatisables. Le sens des potards est celui des paramètres : en automation ou en mapping MIDI aussi, monter la valeur raccourcit les durées.
 
+## Presets et taille de la fenêtre
+
+En haut de la façade : `‹  NOM ▾  ›  SAVE  100 %`.
+
+- **‹ ›** : preset précédent / suivant (DEFAULT, puis les presets enregistrés, par ordre alphabétique, en boucle).
+- **Nom** : menu des presets, SAVE AS…, DELETE (le fichier part à la corbeille), SHOW PRESETS FOLDER. Une étoile `*` signale un preset modifié.
+- **SAVE** : panneau dans la façade ; Entrée = enregistrer, Échap = annuler. Si le nom existe, le bouton devient REPLACE.
+- **100 %** : taille de la fenêtre (60, 75, 100, 125, 150 %). On peut aussi tirer le coin en bas à droite. La taille est gardée avec le projet.
+
+Les presets sont des fichiers `.phgpreset` (XML, valeurs en unités réelles) :
+- macOS : `~/Library/Audio/Presets/Phragma/Phragments/`
+- Windows : `%APPDATA%\Phragma\Phragments\Presets\`
+
+Un preset garde tous les paramètres. Le projet du DAW garde le nom du preset en cours. Un paramètre absent du fichier revient à sa valeur par défaut ; une valeur hors plage est bornée ; un fichier illisible est refusé sans rien changer.
+
 ## Comportement
 
 - Le premier passage laisse passer l'audio tel quel, les suivants le répètent. Sans REVERSE, chaque répétition est la copie exacte de l'enregistrement.
@@ -100,6 +115,7 @@ Le plugin est dans `build/LoopRoll_artefacts/Release/VST3/Phragments.vst3` ; ave
 | `Source/OutputFilter.h` | Le filtre de fin de chaîne (variable d'état, passe-haut / passe-bande / passe-bas, 12 ou 24 dB) et son limiteur. Aucune dépendance. |
 | `Source/PluginProcessor.*` | Paramètres, lecture du tempo et de la position de l'hôte, ordre de la chaîne, mélange dry / wet, sauvegarde d'état. |
 | `Source/PluginEditor.*` | Interface (design clair en relief, dessin vectoriel, quatre modules sur une même grille ; le fond est dessiné une fois et gardé en image). |
+| `Source/PresetLibrary.h`, `Source/PresetBar.h` | Presets utilisateur (fichiers, menu, panneau SAVE) et bouton de taille de la fenêtre. Mêmes fichiers dans Phibres et Phractal. |
 | `Assets/` | Police Chakra Petch embarquée dans le plugin (licence OFL, voir `ChakraPetch-OFL.txt`). |
 | `Tests/EngineTests.cpp` | Tests du traitement audio : boucle exacte, absence de clics, grille sans dérive, changements de durée, refresh, fondus, stutter (motif, swing, profondeur), filtre (types, pentes, limiteur), reverse, pitch (hauteur, niveau, clics, stéréo, automation), fonctions du moteur non exposées, fuzz. |
 | `Tests/PluginTests.cpp` | Tests du plugin complet : sync au tempo, modes indépendants, ordre de chaîne, triolets, reverse, pitch (demi-tons et libre), mix, état (y compris d'anciens états), interface. |

@@ -920,6 +920,9 @@ static void testEditor (const juce::File& outputDir)
     if (editor == nullptr)
         return;
 
+    // Les contrôles sont dans la façade, mise à l'échelle par l'éditeur
+    juce::Component* ui = &dynamic_cast<LoopRollAudioProcessorEditor&> (*editor).getFacade();
+
     check (editor->getWidth() > 100 && editor->getHeight() > 100, "taille d'interface invalide");
 
     auto snapshot = [&] (const juce::String& name)
@@ -939,13 +942,13 @@ static void testEditor (const juce::File& outputDir)
     using Ids = LoopRollAudioProcessor;
     check (editor->getWidth() == 1104 && editor->getHeight() == 642, "taille d'interface : " + juce::String (editor->getWidth()) + " x " + juce::String (editor->getHeight()));
 
-    const auto knob = [&editor] (const char* id) { return dynamic_cast<juce::Slider*> (editor->findChildWithID (id)); };
-    const auto button = [&editor] (const juce::String& id) { return dynamic_cast<juce::TextButton*> (editor->findChildWithID (id)); };
+    const auto knob = [&ui] (const char* id) { return dynamic_cast<juce::Slider*> (ui->findChildWithID (id)); };
+    const auto button = [&ui] (const juce::String& id) { return dynamic_cast<juce::TextButton*> (ui->findChildWithID (id)); };
 
-    const auto readouts = [&editor]
+    const auto readouts = [&ui]
     {
         juce::StringArray texts;
-        for (auto* child : editor->getChildren())
+        for (auto* child : ui->getChildren())
             if (auto* label = dynamic_cast<juce::Label*> (child))
                 texts.add (label->getText());
         return texts.joinIntoString (" | ");
@@ -969,7 +972,7 @@ static void testEditor (const juce::File& outputDir)
     for (const char* id : { Ids::loopId, Ids::reverseId, Ids::limiterId })
         allFound = allFound && button (id) != nullptr;
 
-    auto* stepGrid = dynamic_cast<StutterStepGrid*> (editor->findChildWithID ("stutterSteps"));
+    auto* stepGrid = dynamic_cast<StutterStepGrid*> (ui->findChildWithID ("stutterSteps"));
     allFound = allFound && button (juce::String (Ids::filterTypeId) + "/2") != nullptr && stepGrid != nullptr;
 
     check (allFound, "controles introuvables dans l'interface");
@@ -978,12 +981,12 @@ static void testEditor (const juce::File& outputDir)
     {
         // Tous les contrôles tiennent dans la façade et aucun ne chevauche un autre (hors potards superposés d'un même module).
         juce::Array<juce::Component*> controls;
-        for (auto* child : editor->getChildren())
+        for (auto* child : ui->getChildren())
             if (child->isVisible())
                 controls.add (child);
 
         for (auto* control : controls)
-            check (editor->getLocalBounds().reduced (12).contains (control->getBounds()), "controle hors de la facade : " + control->getComponentID());
+            check (ui->getLocalBounds().reduced (12).contains (control->getBounds()), "controle hors de la facade : " + control->getComponentID());
 
         for (int i = 0; i < controls.size(); ++i)
             for (int j = i + 1; j < controls.size(); ++j)
@@ -1095,7 +1098,7 @@ static void testEditor (const juce::File& outputDir)
         check (readouts() == "1.50 s | 4.00 s | 62.5 ms | 2.50 kHz", "afficheurs en free : " + readouts());
 
         // Saisie au clavier dans un afficheur
-        for (auto* child : editor->getChildren())
+        for (auto* child : ui->getChildren())
             if (auto* label = dynamic_cast<juce::Label*> (child))
                 if (label->getText() == "2.50 kHz")
                 {
@@ -1110,6 +1113,8 @@ static void testEditor (const juce::File& outputDir)
     p->editorBeingDeleted (editor.get());   // ce que fait un hôte avant de détruire l'interface
     editor.reset();
 }
+
+#include "PresetTests.h"
 
 int main (int argc, char* argv[])
 {
@@ -1126,6 +1131,8 @@ int main (int argc, char* argv[])
     testVersion11();
     testParametersAndState();
     testEditor (argc > 1 ? juce::File::getCurrentWorkingDirectory().getChildFile (juce::String::fromUTF8 (argv[1])) : juce::File());
+    testPresetsAndWindowSize<LoopRollAudioProcessor, LoopRollAudioProcessorEditor, LoopRollFacade> ({},
+        argc > 1 ? juce::File::getCurrentWorkingDirectory().getChildFile (juce::String::fromUTF8 (argv[1])) : juce::File());
 
     std::cout << (failures == 0 ? "TOUS LES TESTS PASSENT" : juce::String (failures) + " ECHEC(S)") << std::endl;
     return failures == 0 ? 0 : 1;

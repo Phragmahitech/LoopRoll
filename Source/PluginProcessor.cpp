@@ -238,8 +238,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout LoopRollAudioProcessor::crea
 LoopRollAudioProcessor::LoopRollAudioProcessor()
     : AudioProcessor (BusesProperties().withInput ("Input", juce::AudioChannelSet::stereo(), true)
                                        .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
-      apvts (*this, nullptr, "LoopRoll", createParameterLayout())   // ancien nom du plugin : à garder, les états sauvegardés portent cette étiquette
+      apvts (*this, nullptr, "LoopRoll", createParameterLayout()),   // ancien nom du plugin : à garder, les états sauvegardés portent cette étiquette
+      presets (apvts, "Phragments", ".phgpreset", PresetLibrary::defaultsOnly (*this, {}), {}, "UNTITLED")
 {
+    presets.restoreFromState();   // projet neuf : DEFAULT
     loopParam     = apvts.getRawParameterValue (loopId);
     modeParam     = apvts.getRawParameterValue (modeId);
     timeParam     = apvts.getRawParameterValue (timeId);
@@ -511,6 +513,7 @@ void LoopRollAudioProcessor::setStateInformation (const void* data, int sizeInBy
     }
 
     apvts.replaceState (state);
+    presets.restoreFromState();
 }
 
 //==============================================================================
